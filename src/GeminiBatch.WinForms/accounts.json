@@ -1,0 +1,5 @@
+[
+  { "id": "fake-1", "email": "fake1@example.com", "userDataDir": "profiles/fake-1", "enabled": true },
+  { "id": "fake-2", "email": "fake2@example.com", "userDataDir": "profiles/fake-2", "enabled": true },
+  { "id": "fake-3", "email": "fake3@example.com", "userDataDir": "profiles/fake-3", "enabled": true }
+]
