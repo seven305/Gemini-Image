@@ -7,3 +7,4 @@ logs/
 profiles/
 *.user
 .vs/
+diagnostics/

@@ -14,5 +14,8 @@ public sealed class BatchOptions
     public int MaxInterPromptDelayMs { get; set; } = 3000;
     public bool StripMetadata { get; set; } = true;
     public bool Headful { get; set; } = true;
+
+    /// <summary>Use the offline fake session instead of the real browser (testing without Google accounts).</summary>
+    public bool UseFakeSession { get; set; }
     public string ManifestPath { get; set; } = Path.Combine("output", "manifest.json");
 }

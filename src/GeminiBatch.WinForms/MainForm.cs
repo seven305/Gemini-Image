@@ -13,6 +13,7 @@ public sealed class MainForm : Form
     private readonly BatchProcessor _processor;
     private readonly IPromptSource _promptSource;
     private readonly IAccountStore _accountStore;
+    private readonly IAccountLoginService _loginService;
     private readonly BatchOptions _options;
     private readonly ILogger<MainForm> _logger;
 
@@ -20,26 +21,32 @@ public sealed class MainForm : Form
     private readonly NumericUpDown _numConcurrency = new();
     private readonly Button _btnStart = new();
     private readonly Button _btnStop = new();
+    private readonly ComboBox _cmbAccount = new();
+    private readonly Button _btnLogin = new();
     private readonly Label _lblStatus = new();
     private readonly DataGridView _grid = new();
 
     private readonly Dictionary<Guid, DataGridViewRow> _rowsByJob = new();
     private CancellationTokenSource? _cts;
+    private bool _busy;
 
     public MainForm(
         BatchProcessor processor,
         IPromptSource promptSource,
         IAccountStore accountStore,
+        IAccountLoginService loginService,
         IOptions<BatchOptions> options,
         ILogger<MainForm> logger)
     {
         _processor = processor;
         _promptSource = promptSource;
         _accountStore = accountStore;
+        _loginService = loginService;
         _options = options.Value;
         _logger = logger;
 
         BuildLayout();
+        Shown += async (_, _) => await RefreshAccountsAsync();
     }
 
     private void BuildLayout()
@@ -89,6 +96,17 @@ public sealed class MainForm : Form
         _btnStop.Click += (_, _) => Stop();
         toolbar.Controls.Add(_btnStop);
 
+        toolbar.Controls.Add(new Label { Text = "Account:", AutoSize = true, Margin = new Padding(16, 8, 4, 0) });
+        _cmbAccount.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbAccount.Width = 180;
+        _cmbAccount.Margin = new Padding(0, 4, 4, 0);
+        toolbar.Controls.Add(_cmbAccount);
+
+        _btnLogin.Text = "Login…";
+        _btnLogin.Width = 90;
+        _btnLogin.Click += async (_, _) => await LoginAsync();
+        toolbar.Controls.Add(_btnLogin);
+
         _lblStatus.AutoSize = true;
         _lblStatus.Margin = new Padding(16, 8, 0, 0);
         _lblStatus.Text = "Idle";
@@ -134,6 +152,7 @@ public sealed class MainForm : Form
             return;
         }
 
+        await RefreshAccountsAsync();
         PopulateGrid(jobs);
         SetRunning(true);
         _lblStatus.Text = $"Running {jobs.Count} job(s)…";
@@ -175,10 +194,76 @@ public sealed class MainForm : Form
 
     private void SetRunning(bool running)
     {
+        _busy = running;
         _btnStart.Enabled = !running;
         _btnStop.Enabled = running;
         _txtPrompts.ReadOnly = running;
         _numConcurrency.Enabled = !running;
+        _btnLogin.Enabled = !running;
+        _cmbAccount.Enabled = !running;
+    }
+
+    /// <summary>Fills the account picker used by Login. Failures are non-fatal: Start reports them properly.</summary>
+    private async Task RefreshAccountsAsync()
+    {
+        try
+        {
+            var accounts = await _accountStore.LoadAsync(CancellationToken.None);
+            _cmbAccount.Items.Clear();
+            foreach (var account in accounts)
+                _cmbAccount.Items.Add(new AccountItem(account));
+            if (_cmbAccount.Items.Count > 0) _cmbAccount.SelectedIndex = 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not load accounts for the picker");
+            _lblStatus.Text = "Accounts not loaded: " + ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// Opens the selected account's profile so a human can sign in (2FA included). The browser closes
+    /// itself once the session is detected, which also flushes and unlocks the profile for the batch.
+    /// </summary>
+    private async Task LoginAsync()
+    {
+        if (_busy) return;
+        if (_cmbAccount.SelectedItem is not AccountItem item)
+        {
+            MessageBox.Show(this, "No account selected. Check accounts.json.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        SetRunning(true);
+        _cts = new CancellationTokenSource();
+        var status = new Progress<string>(text => _lblStatus.Text = text);
+        try
+        {
+            _lblStatus.Text = "Opening browser…";
+            await _loginService.LoginInteractiveAsync(item.Account, TimeSpan.FromMinutes(15), status, _cts.Token);
+            _lblStatus.Text = $"Signed in: {item.Account.Email}";
+        }
+        catch (OperationCanceledException)
+        {
+            _lblStatus.Text = "Login cancelled";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Login failed for account {AccountId}", item.Account.Id);
+            _lblStatus.Text = "Login failed: " + ex.Message;
+            MessageBox.Show(this, ex.Message, "Login", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _cts.Dispose();
+            _cts = null;
+            SetRunning(false);
+        }
+    }
+
+    private sealed record AccountItem(GeminiAccount Account)
+    {
+        public override string ToString() => string.IsNullOrWhiteSpace(Account.Email) ? Account.Id : $"{Account.Id} ({Account.Email})";
     }
 
     private void PopulateGrid(IReadOnlyList<PromptJob> jobs)

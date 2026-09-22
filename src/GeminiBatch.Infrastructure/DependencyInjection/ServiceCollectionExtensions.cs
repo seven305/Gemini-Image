@@ -2,6 +2,7 @@ using GeminiBatch.Application.Abstractions;
 using GeminiBatch.Application.Options;
 using GeminiBatch.Infrastructure.Accounts;
 using GeminiBatch.Infrastructure.Fakes;
+using GeminiBatch.Infrastructure.Gemini;
 using GeminiBatch.Infrastructure.Logging;
 using GeminiBatch.Infrastructure.Manifest;
 using GeminiBatch.Infrastructure.Processing;
@@ -16,14 +17,31 @@ namespace GeminiBatch.Infrastructure.DependencyInjection;
 
 public static class ServiceCollectionExtensions
 {
-    /// <summary>Phase 1 wiring: real storage/manifest/sources, fake Gemini session, no-op image processor.</summary>
+    /// <summary>
+    /// Real storage/manifest/sources plus the Playwright Gemini session. Set <c>Batch:UseFakeSession=true</c>
+    /// (appsettings.json, or GEMINIBATCH_Batch__UseFakeSession=true) to swap in the offline fake instead.
+    /// </summary>
     public static IServiceCollection AddInfrastructure(this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<BatchOptions>(configuration.GetSection(BatchOptions.SectionName));
         services.Configure<FakeSessionOptions>(configuration.GetSection(FakeSessionOptions.SectionName));
         services.Configure<AccountStoreOptions>(configuration.GetSection(AccountStoreOptions.SectionName));
+        services.Configure<GeminiSessionOptions>(configuration.GetSection(GeminiSessionOptions.SectionName));
 
-        services.AddSingleton<IGeminiSessionFactory, FakeGeminiSessionFactory>();
+        var useFakeSession = configuration.GetValue($"{BatchOptions.SectionName}:{nameof(BatchOptions.UseFakeSession)}", false);
+        if (useFakeSession)
+        {
+            services.AddSingleton<IGeminiSessionFactory, FakeGeminiSessionFactory>();
+            services.AddSingleton<IAccountLoginService, UnavailableAccountLoginService>();
+        }
+        else
+        {
+            // One launcher for the whole app: it owns the Playwright driver process.
+            services.AddSingleton<PlaywrightBrowserLauncher>();
+            services.AddSingleton<IGeminiSessionFactory, PlaywrightGeminiSessionFactory>();
+            services.AddSingleton<IAccountLoginService, PlaywrightAccountLoginService>();
+        }
+
         services.AddSingleton<IImageStorage, FileSystemImageStorage>();
         services.AddSingleton<IImageProcessor, NullImageProcessor>();
         services.AddSingleton<IJobManifest, JsonJobManifest>();
