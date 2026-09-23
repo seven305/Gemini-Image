@@ -13,6 +13,7 @@ public sealed class MainForm : Form
     private readonly BatchProcessor _processor;
     private readonly IPromptSource _promptSource;
     private readonly IAccountStore _accountStore;
+    private readonly ICsvAccountRoster _csvRoster;
     private readonly IAccountLoginService _loginService;
     private readonly BatchOptions _options;
     private readonly ILogger<MainForm> _logger;
@@ -22,6 +23,7 @@ public sealed class MainForm : Form
     private readonly Button _btnStart = new();
     private readonly Button _btnStop = new();
     private readonly ComboBox _cmbAccount = new();
+    private readonly Button _btnLoadCsv = new();
     private readonly Button _btnLogin = new();
     private readonly Label _lblStatus = new();
     private readonly DataGridView _grid = new();
@@ -30,10 +32,14 @@ public sealed class MainForm : Form
     private CancellationTokenSource? _cts;
     private bool _busy;
 
+    // Accounts loaded from a CSV the operator picked; null = fall back to accounts.json.
+    private IReadOnlyList<GeminiAccount>? _rosterAccounts;
+
     public MainForm(
         BatchProcessor processor,
         IPromptSource promptSource,
         IAccountStore accountStore,
+        ICsvAccountRoster csvRoster,
         IAccountLoginService loginService,
         IOptions<BatchOptions> options,
         ILogger<MainForm> logger)
@@ -41,6 +47,7 @@ public sealed class MainForm : Form
         _processor = processor;
         _promptSource = promptSource;
         _accountStore = accountStore;
+        _csvRoster = csvRoster;
         _loginService = loginService;
         _options = options.Value;
         _logger = logger;
@@ -96,7 +103,13 @@ public sealed class MainForm : Form
         _btnStop.Click += (_, _) => Stop();
         toolbar.Controls.Add(_btnStop);
 
-        toolbar.Controls.Add(new Label { Text = "Account:", AutoSize = true, Margin = new Padding(16, 8, 4, 0) });
+        _btnLoadCsv.Text = "Load CSV…";
+        _btnLoadCsv.Width = 90;
+        _btnLoadCsv.Margin = new Padding(16, 4, 4, 0);
+        _btnLoadCsv.Click += (_, _) => LoadCsv();
+        toolbar.Controls.Add(_btnLoadCsv);
+
+        toolbar.Controls.Add(new Label { Text = "Account:", AutoSize = true, Margin = new Padding(8, 8, 4, 0) });
         _cmbAccount.DropDownStyle = ComboBoxStyle.DropDownList;
         _cmbAccount.Width = 180;
         _cmbAccount.Margin = new Padding(0, 4, 4, 0);
@@ -143,7 +156,7 @@ public sealed class MainForm : Form
         IReadOnlyList<GeminiAccount> accounts;
         try
         {
-            accounts = await _accountStore.LoadAsync(CancellationToken.None);
+            accounts = await CurrentAccountsAsync();
         }
         catch (Exception ex)
         {
@@ -152,7 +165,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        await RefreshAccountsAsync();
+        PopulateAccountPicker(accounts);
         PopulateGrid(jobs);
         SetRunning(true);
         _lblStatus.Text = $"Running {jobs.Count} job(s)…";
@@ -200,7 +213,43 @@ public sealed class MainForm : Form
         _txtPrompts.ReadOnly = running;
         _numConcurrency.Enabled = !running;
         _btnLogin.Enabled = !running;
+        _btnLoadCsv.Enabled = !running;
         _cmbAccount.Enabled = !running;
+    }
+
+    /// <summary>Accounts come from the loaded CSV roster when present, otherwise from accounts.json.</summary>
+    private async Task<IReadOnlyList<GeminiAccount>> CurrentAccountsAsync() =>
+        _rosterAccounts ?? await _accountStore.LoadAsync(CancellationToken.None);
+
+    /// <summary>
+    /// Lets the operator pick a CSV whose first column is the account email. Sign-in stays manual: this
+    /// only builds the account/profile roster; passwords and 2FA secrets in the file are not read.
+    /// </summary>
+    private void LoadCsv()
+    {
+        if (_busy) return;
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Select account CSV (first column = email)",
+            Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var accounts = _csvRoster.Read(dialog.FileName);
+            _rosterAccounts = accounts;
+            PopulateAccountPicker(accounts);
+            _lblStatus.Text = $"Loaded {accounts.Count} account(s) from {Path.GetFileName(dialog.FileName)} — sign each in via Login…";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to load account CSV {Path}", dialog.FileName);
+            _lblStatus.Text = "CSV not loaded: " + ex.Message;
+            MessageBox.Show(this, ex.Message, "Load CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     /// <summary>Fills the account picker used by Login. Failures are non-fatal: Start reports them properly.</summary>
@@ -208,17 +257,25 @@ public sealed class MainForm : Form
     {
         try
         {
-            var accounts = await _accountStore.LoadAsync(CancellationToken.None);
-            _cmbAccount.Items.Clear();
-            foreach (var account in accounts)
-                _cmbAccount.Items.Add(new AccountItem(account));
-            if (_cmbAccount.Items.Count > 0) _cmbAccount.SelectedIndex = 0;
+            PopulateAccountPicker(await CurrentAccountsAsync());
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not load accounts for the picker");
             _lblStatus.Text = "Accounts not loaded: " + ex.Message;
         }
+    }
+
+    private void PopulateAccountPicker(IReadOnlyList<GeminiAccount> accounts)
+    {
+        var previous = (_cmbAccount.SelectedItem as AccountItem)?.Account.Id;
+        _cmbAccount.Items.Clear();
+        foreach (var account in accounts)
+            _cmbAccount.Items.Add(new AccountItem(account));
+
+        if (_cmbAccount.Items.Count == 0) return;
+        var restored = _cmbAccount.Items.Cast<AccountItem>().ToList().FindIndex(a => a.Account.Id == previous);
+        _cmbAccount.SelectedIndex = restored >= 0 ? restored : 0;
     }
 
     /// <summary>

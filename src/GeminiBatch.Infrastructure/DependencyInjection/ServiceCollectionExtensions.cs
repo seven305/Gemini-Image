@@ -46,6 +46,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IImageProcessor, NullImageProcessor>();
         services.AddSingleton<IJobManifest, JsonJobManifest>();
         services.AddSingleton<IAccountStore, JsonAccountStore>();
+        services.AddSingleton<ICsvAccountRoster, CsvAccountRoster>();
         services.AddSingleton<IPromptSource, TextPromptSource>();
 
         var logFolder = configuration["Logging:Folder"] ?? "logs";

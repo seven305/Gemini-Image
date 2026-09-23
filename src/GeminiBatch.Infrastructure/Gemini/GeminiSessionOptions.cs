@@ -48,4 +48,7 @@ public sealed class GeminiSessionOptions
 
     /// <summary>Initial browser window size as "width,height". Null keeps Chrome's remembered size.</summary>
     public string? WindowSize { get; set; } = "1280,900";
+
+    /// <summary>Base folder under which each CSV-rostered account gets its own persistent profile directory.</summary>
+    public string ProfilesRoot { get; set; } = "profiles";
 }
