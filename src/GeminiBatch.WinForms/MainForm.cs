@@ -8,25 +8,19 @@ using Microsoft.Extensions.Options;
 
 namespace GeminiBatch.WinForms;
 
-public sealed class MainForm : Form
+/// <summary>
+/// Code-behind for the batch UI. The controls and layout live in <c>MainForm.Designer.cs</c> (edit them
+/// in the WinForms designer, not here); this partial holds the wiring and behavior only.
+/// </summary>
+public sealed partial class MainForm : Form
 {
-    private readonly BatchProcessor _processor;
-    private readonly IPromptSource _promptSource;
-    private readonly IAccountStore _accountStore;
-    private readonly ICsvAccountRoster _csvRoster;
-    private readonly IAccountLoginService _loginService;
-    private readonly BatchOptions _options;
-    private readonly ILogger<MainForm> _logger;
-
-    private readonly TextBox _txtPrompts = new();
-    private readonly NumericUpDown _numConcurrency = new();
-    private readonly Button _btnStart = new();
-    private readonly Button _btnStop = new();
-    private readonly ComboBox _cmbAccount = new();
-    private readonly Button _btnLoadCsv = new();
-    private readonly Button _btnLogin = new();
-    private readonly Label _lblStatus = new();
-    private readonly DataGridView _grid = new();
+    private readonly BatchProcessor _processor = null!;
+    private readonly IPromptSource _promptSource = null!;
+    private readonly IAccountStore _accountStore = null!;
+    private readonly ICsvAccountRoster _csvRoster = null!;
+    private readonly IAccountLoginService _loginService = null!;
+    private readonly BatchOptions _options = null!;
+    private readonly ILogger<MainForm> _logger = null!;
 
     private readonly Dictionary<Guid, DataGridViewRow> _rowsByJob = new();
     private CancellationTokenSource? _cts;
@@ -34,6 +28,12 @@ public sealed class MainForm : Form
 
     // Accounts loaded from a CSV the operator picked; null = fall back to accounts.json.
     private IReadOnlyList<GeminiAccount>? _rosterAccounts;
+
+    /// <summary>Designer-only constructor. The app always constructs <see cref="MainForm"/> through DI.</summary>
+    public MainForm()
+    {
+        InitializeComponent();
+    }
 
     public MainForm(
         BatchProcessor processor,
@@ -43,6 +43,7 @@ public sealed class MainForm : Form
         IAccountLoginService loginService,
         IOptions<BatchOptions> options,
         ILogger<MainForm> logger)
+        : this()
     {
         _processor = processor;
         _promptSource = promptSource;
@@ -52,97 +53,19 @@ public sealed class MainForm : Form
         _options = options.Value;
         _logger = logger;
 
-        BuildLayout();
-        Shown += async (_, _) => await RefreshAccountsAsync();
-    }
-
-    private void BuildLayout()
-    {
-        Text = "Gemini Batch Image Generator";
-        MinimumSize = new Size(900, 600);
-        StartPosition = FormStartPosition.CenterScreen;
-
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 4,
-            Padding = new Padding(8),
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 65));
-
-        root.Controls.Add(new Label { Text = "Prompts (one per line, # for comments):", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-
-        _txtPrompts.Multiline = true;
-        _txtPrompts.ScrollBars = ScrollBars.Vertical;
-        _txtPrompts.AcceptsReturn = true;
-        _txtPrompts.Dock = DockStyle.Fill;
-        _txtPrompts.Font = new Font(FontFamily.GenericMonospace, 9.5f);
-        root.Controls.Add(_txtPrompts, 0, 1);
-
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
-        toolbar.Controls.Add(new Label { Text = "Concurrency:", AutoSize = true, Margin = new Padding(0, 8, 4, 0) });
-        _numConcurrency.Minimum = 1;
-        _numConcurrency.Maximum = 20;
         _numConcurrency.Value = Math.Clamp(_options.DefaultConcurrency, 1, 20);
-        _numConcurrency.Width = 60;
-        _numConcurrency.Margin = new Padding(0, 4, 12, 0);
-        toolbar.Controls.Add(_numConcurrency);
-
-        _btnStart.Text = "Start";
-        _btnStart.Width = 90;
-        _btnStart.Click += async (_, _) => await StartAsync();
-        toolbar.Controls.Add(_btnStart);
-
-        _btnStop.Text = "Stop";
-        _btnStop.Width = 90;
-        _btnStop.Enabled = false;
-        _btnStop.Click += (_, _) => Stop();
-        toolbar.Controls.Add(_btnStop);
-
-        _btnLoadCsv.Text = "Load CSV…";
-        _btnLoadCsv.Width = 90;
-        _btnLoadCsv.Margin = new Padding(16, 4, 4, 0);
-        _btnLoadCsv.Click += (_, _) => LoadCsv();
-        toolbar.Controls.Add(_btnLoadCsv);
-
-        toolbar.Controls.Add(new Label { Text = "Account:", AutoSize = true, Margin = new Padding(8, 8, 4, 0) });
-        _cmbAccount.DropDownStyle = ComboBoxStyle.DropDownList;
-        _cmbAccount.Width = 180;
-        _cmbAccount.Margin = new Padding(0, 4, 4, 0);
-        toolbar.Controls.Add(_cmbAccount);
-
-        _btnLogin.Text = "Login…";
-        _btnLogin.Width = 90;
-        _btnLogin.Click += async (_, _) => await LoginAsync();
-        toolbar.Controls.Add(_btnLogin);
-
-        _lblStatus.AutoSize = true;
-        _lblStatus.Margin = new Padding(16, 8, 0, 0);
-        _lblStatus.Text = "Idle";
-        toolbar.Controls.Add(_lblStatus);
-        root.Controls.Add(toolbar, 0, 2);
-
-        _grid.Dock = DockStyle.Fill;
-        _grid.ReadOnly = true;
-        _grid.AllowUserToAddRows = false;
-        _grid.AllowUserToDeleteRows = false;
-        _grid.AllowUserToResizeRows = false;
-        _grid.RowHeadersVisible = false;
-        _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        _grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Prompt", HeaderText = "Prompt", FillWeight = 40 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Filename", HeaderText = "Filename", FillWeight = 25 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", FillWeight = 12 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Account", HeaderText = "Account", FillWeight = 13 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Attempts", HeaderText = "Attempts", FillWeight = 10 });
-        root.Controls.Add(_grid, 0, 3);
-
-        Controls.Add(root);
     }
+
+    // ---- Event handlers (wired in the designer) ---------------------------------------------
+
+    private async void OnShown(object? sender, EventArgs e) => await RefreshAccountsAsync();
+    private async void OnStartClick(object? sender, EventArgs e) => await StartAsync();
+    private void OnStopClick(object? sender, EventArgs e) => Stop();
+    private void OnLoadCsvClick(object? sender, EventArgs e) => LoadCsv();
+    private async void OnLoginClick(object? sender, EventArgs e) => await LoginAsync();
+    private void OnFormClosed(object? sender, FormClosedEventArgs e) => _cts?.Cancel();
+
+    // ---- Behavior ---------------------------------------------------------------------------
 
     private async Task StartAsync()
     {
@@ -366,13 +289,4 @@ public sealed class MainForm : Form
     }
 
     private static string Preview(string prompt) => prompt.Length <= 80 ? prompt : prompt[..80] + "…";
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            _cts?.Cancel();
-        }
-        base.Dispose(disposing);
-    }
 }

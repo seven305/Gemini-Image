@@ -40,6 +40,9 @@ account quarantine after threshold, manifest resume, inter-prompt jitter.
 - Batch must survive individual job/account failures; crash-resume via manifest.
 - WinForms: `Progress<JobUpdate>` created on UI thread; update single row by Id via
   Dictionary<Guid, DataGridViewRow> (no rebind). Stop -> CancellationTokenSource.
+- WinForms UI is authored via the designer (`*.Designer.cs` + `*.resx`), never built programmatically;
+  events wired to named handlers. Forms keep a parameterless ctor for the designer plus a `: this()` DI
+  ctor. Code-behind (`*.cs`) holds behavior only.
 
 ## Anti-detection (Gemini web automation is the dominant risk)
 Headful, one account per persistent context/profile, per-account proxy support, human-like

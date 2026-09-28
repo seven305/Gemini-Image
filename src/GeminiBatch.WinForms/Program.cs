@@ -1,7 +1,7 @@
 using GeminiBatch.Application;
 using GeminiBatch.Application.Options;
 using GeminiBatch.Infrastructure.DependencyInjection;
-using GeminiBatch.Infrastructure.Fakes;
+using GeminiBatch.Infrastructure.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -17,7 +17,7 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
-        // Content root = exe folder so appsettings.json / accounts.json resolve regardless of the launch cwd.
+        // Content root = exe folder so appsettings.json /  accounts.json resolve regardless of the launch cwd.
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
         {
             Args = args,

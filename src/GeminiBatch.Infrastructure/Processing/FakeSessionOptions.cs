@@ -1,4 +1,4 @@
-namespace GeminiBatch.Infrastructure.Fakes;
+namespace GeminiBatch.Infrastructure.Processing;
 
 /// <summary>
 /// Knobs for the Phase 1 fake session. Bind from the "Fake" section, or override via environment

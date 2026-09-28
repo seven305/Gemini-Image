@@ -1,5 +1,6 @@
 using GeminiBatch.Application.Abstractions;
 using GeminiBatch.Domain;
+using GeminiBatch.Infrastructure.Processing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 

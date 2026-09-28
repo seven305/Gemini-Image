@@ -1,6 +1,7 @@
 using GeminiBatch.Application.Abstractions;
 using GeminiBatch.Application.Models;
 using GeminiBatch.Domain;
+using GeminiBatch.Infrastructure.Processing;
 using Microsoft.Extensions.Logging;
 
 namespace GeminiBatch.Infrastructure.Fakes;
