@@ -26,7 +26,7 @@ Status, Attempts, AssignedAccountId, SavedPath, LastError), `GeminiAccount` (Id,
 UserDataDir, Proxy?, Enabled, quarantine state), `ProxySettings(Server,User?,Pass?)`,
 `JobStatus` enum.
 Application ports: `IGeminiSession`(+`IGeminiSessionFactory`), `IImageStorage`,
-`IImageProcessor`, `IAccountStore`, `IPromptSource`, `IJobManifest`. Models: `JobUpdate`,
+`IImageProcessor`, `ICsvAccountRoster`, `IPromptSource`, `IJobManifest`. Models: `JobUpdate`,
 `BatchResult`, `BatchOptions`. `BatchProcessor.RunAsync(jobs, accounts, concurrency,
 IProgress<JobUpdate>, ct)` — Channels worker pool (one account per worker), Polly retry,
 account quarantine after threshold, manifest resume, inter-prompt jitter.
@@ -46,7 +46,9 @@ account quarantine after threshold, manifest resume, inter-prompt jitter.
 
 ## Anti-detection (Gemini web automation is the dominant risk)
 Headful, one account per persistent context/profile, per-account proxy support, human-like
-pacing/jitter, low concurrency (default 5). First-run login is manual (2FA). Expect periodic
+pacing/jitter, low concurrency (default 5). Login is automated from the CSV roster (email, password,
+recovery email, TOTP key -> `GoogleSignInDriver`) with no manual fallback in the app: an account that hits a
+CAPTCHA/unknown challenge is skipped; sign-ins run one account at a time. Expect periodic
 re-auth; no code removes it fully.
 
 ## Verified specifics (from Phase 0 spike)
@@ -57,7 +59,8 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
 - Phase 0 (spike): DONE.  Phase 1 (skeleton + contracts + fakes): DONE.
 - Phase 2 (real Playwright Gemini session): code complete, awaiting the first live-account run.
   Built: `GeminiSelectors`, `PlaywrightGeminiSession(+Factory)`, `PlaywrightBrowserLauncher`,
-  `PlaywrightAccountLoginService` (manual sign-in + 2FA), `AccountUnavailableException`,
+  `GoogleSignInDriver` + `GoogleSignInGate` (automated sign-in from CSV credentials incl. TOTP via
+  `TotpGenerator`; once per session, one account at a time), `AccountUnavailableException`,
   `Batch:UseFakeSession` switch, failure diagnostics (screenshot + ARIA snapshot).
   Verified so far: DI both ways, Chrome launch, signed-out detection, 25 unit tests.
 - Next: Phase 3 concurrency hardening, Phase 4 UI polish, Phase 5 deploy. Bonus: CSV, naming, EXIF.
@@ -67,8 +70,13 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
 Browser: `Gemini:Channel` defaults to the installed **chrome** — bundled Chromium could not be spawned
 on the dev box (see SPIKE_FINDINGS.md), so `playwright install chromium` is only needed if you set
 `Channel` to null/empty.
-Run GeminiBatch.WinForms: pick an account, **Login…** (sign in manually once per profile; the window
-closes itself when the session is detected), then paste prompts and **Start**.
+Run GeminiBatch.WinForms: paste prompts and **Start**. Start asks for the account CSV the first time
+(`email,password,recovery email,2FA key,proxy`; only the email is required; proxy is a URL such as
+`http://user:pass@host:port` or `socks5://host:port`; header optional; `*.csv` is git-ignored) and re-reads it
+on every run; **Load CSV…** switches files. The CSV is the only account source. Each worker signs its account
+in automatically if the profile is signed out — one sign-in at a time app-wide (`GoogleSignInGate`). An
+account whose sign-in fails (CAPTCHA, unknown challenge, wrong password, no password) is skipped, the batch
+continues, and skipped accounts + reasons are listed at the end.
 Offline testing: `Batch:UseFakeSession=true` (appsettings.json or `GEMINIBATCH_Batch__UseFakeSession=true`)
 swaps the real session for the fake — no browser, no accounts.
 Download path: `Gemini:DownloadMode=Net` (default, crash-free CDN capture) or `Ui` (bit-exact original,

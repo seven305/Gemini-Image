@@ -8,6 +8,9 @@ public sealed class GeminiAccount
     public ProxySettings? Proxy { get; init; }
     public bool Enabled { get; init; } = true;
 
+    /// <summary>Sign-in secrets from the CSV roster; null means sign-in is manual. Never persisted.</summary>
+    public AccountCredentials? Credentials { get; init; }
+
     // Runtime-only state: never persisted. Reset by constructing a fresh account list.
     public bool IsQuarantined { get; private set; }
     public string? QuarantineReason { get; private set; }

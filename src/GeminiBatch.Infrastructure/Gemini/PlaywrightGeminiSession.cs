@@ -25,10 +25,14 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     private readonly GeminiSessionOptions _options;
     private readonly BatchOptions _batchOptions;
     private readonly ILogger<PlaywrightGeminiSession> _logger;
+    private readonly GoogleSignInGate _signInGate;
     private readonly string _tempDir;
     private readonly string _diagnosticsDir;
+    private static readonly TimeSpan AutoSignInTimeout = TimeSpan.FromMinutes(3);
+
     private IPage _page;
     private bool _disposed;
+    private bool _autoSignInAttempted;
 
     public PlaywrightGeminiSession(
         GeminiAccount account,
@@ -36,6 +40,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         IPage page,
         GeminiSessionOptions options,
         BatchOptions batchOptions,
+        GoogleSignInGate signInGate,
         ILogger<PlaywrightGeminiSession> logger)
     {
         _account = account;
@@ -43,6 +48,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         _page = page;
         _options = options;
         _batchOptions = batchOptions;
+        _signInGate = signInGate;
         _logger = logger;
         _tempDir = Path.Combine(Path.GetTempPath(), "geminibatch");
         _diagnosticsDir = Path.Combine(Path.GetFullPath(options.DiagnosticsFolder), SanitizeForPath(account.Id));
@@ -113,6 +119,24 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         await EnsurePageAsync(ct).ConfigureAwait(false);
         var sw = Stopwatch.StartNew();
 
+        var problem = await TryOpenSignedInChatAsync(ct).ConfigureAwait(false);
+        if (problem is not null && CanAutoSignIn)
+        {
+            var failure = await AutoSignInAsync(ct).ConfigureAwait(false);
+            problem = failure is null
+                ? await TryOpenSignedInChatAsync(ct).ConfigureAwait(false)
+                : new AccountUnavailableException(AccountUnavailableReason.Challenged, $"Automated sign-in failed: {failure}", problem);
+        }
+        if (problem is not null)
+            throw problem;
+
+        await DismissNoticeIfPresentAsync().ConfigureAwait(false);
+        _logger.LogDebug("New chat ready in {Elapsed} ms", sw.ElapsedMilliseconds);
+    }
+
+    /// <summary>Loads /app; returns the reason the account is unusable, or null when it is signed in and ready.</summary>
+    private async Task<AccountUnavailableException?> TryOpenSignedInChatAsync(CancellationToken ct)
+    {
         await _page.GotoAsync(GeminiSelectors.AppUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded })
             .WaitAsync(ct).ConfigureAwait(false);
 
@@ -125,7 +149,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         catch (TimeoutException ex)
         {
             if (GeminiSelectors.IsLoginRedirect(_page.Url))
-                throw new AccountUnavailableException(AccountUnavailableReason.Challenged,
+                return new AccountUnavailableException(AccountUnavailableReason.Challenged,
                     $"Redirected to a Google sign-in/verification page: {_page.Url}", ex);
 
             throw new AccountUnavailableException(AccountUnavailableReason.SurfaceUnavailable,
@@ -134,16 +158,50 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         }
 
         var state = await GeminiSignInCheck.ProbeAsync(_context, _page).ConfigureAwait(false);
-        if (!state.IsSignedIn)
-        {
-            var reason = GeminiSelectors.IsLoginRedirect(state.Url) ? AccountUnavailableReason.Challenged : AccountUnavailableReason.SignedOut;
-            throw new AccountUnavailableException(reason,
-                $"Account {_account.Id} is not signed in (sessionCookie={state.HasSessionCookie}, signInButton={state.SignInButtonVisible}, url={state.Url}). " +
-                "Use Login… to re-authenticate this profile.");
-        }
+        if (state.IsSignedIn)
+            return null;
 
-        await DismissNoticeIfPresentAsync().ConfigureAwait(false);
-        _logger.LogDebug("New chat ready in {Elapsed} ms", sw.ElapsedMilliseconds);
+        var reason = GeminiSelectors.IsLoginRedirect(state.Url) ? AccountUnavailableReason.Challenged : AccountUnavailableReason.SignedOut;
+        return new AccountUnavailableException(reason,
+            $"Account {_account.Id} is not signed in (sessionCookie={state.HasSessionCookie}, signInButton={state.SignInButtonVisible}, url={state.Url}). " +
+            "Add a password (and 2FA key) for it in the CSV, or sign the profile in manually.");
+    }
+
+    /// <summary>
+    /// A lapsed profile is re-signed in place with its CSV credentials — once per session only: repeated
+    /// failed sign-ins are exactly what makes Google lock an account, so a second lapse goes to quarantine.
+    /// </summary>
+    private bool CanAutoSignIn => _account.Credentials is not null && !_autoSignInAttempted;
+
+    /// <summary>
+    /// Signs the profile in, queued behind any other account's sign-in (<see cref="GoogleSignInGate"/>).
+    /// Returns null on success, else why it failed — that text ends up in the account's quarantine reason.
+    /// </summary>
+    private async Task<string?> AutoSignInAsync(CancellationToken ct)
+    {
+        _autoSignInAttempted = true;
+        _logger.LogWarning("Account {AccountId} is signed out; queued for automated sign-in", _account.Id);
+
+        // Acquired before the driver starts, so time spent queued doesn't count against its timeout.
+        using var turn = await _signInGate.EnterAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var driver = new GoogleSignInDriver(_account, _logger);
+            if (await driver.SignInAsync(_context, _page, AutoSignInTimeout, ct).ConfigureAwait(false))
+            {
+                _logger.LogInformation("Automated sign-in succeeded for {AccountId}", _account.Id);
+                return null;
+            }
+
+            await CaptureDiagnosticsAsync("auto-sign-in").ConfigureAwait(false);
+            return driver.StopReason ?? "the sign-in did not complete.";
+        }
+        catch (Exception ex) when (ex is TimeoutException or PlaywrightException or InvalidOperationException)
+        {
+            _logger.LogWarning(ex, "Automated sign-in failed for {AccountId}", _account.Id);
+            await CaptureDiagnosticsAsync("auto-sign-in").ConfigureAwait(false);
+            return ex.Message;
+        }
     }
 
     /// <summary>Recreate the page if a previous attempt lost it (e.g. the UI-download crash closes the tab).</summary>

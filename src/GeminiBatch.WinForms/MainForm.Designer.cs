@@ -12,9 +12,6 @@ partial class MainForm
     private System.Windows.Forms.Button _btnStart;
     private System.Windows.Forms.Button _btnStop;
     private System.Windows.Forms.Button _btnLoadCsv;
-    private System.Windows.Forms.Label _lblAccount;
-    private System.Windows.Forms.ComboBox _cmbAccount;
-    private System.Windows.Forms.Button _btnLogin;
     private System.Windows.Forms.Label _lblStatus;
     private System.Windows.Forms.DataGridView _grid;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colPrompt;
@@ -48,9 +45,6 @@ partial class MainForm
         _btnStart = new System.Windows.Forms.Button();
         _btnStop = new System.Windows.Forms.Button();
         _btnLoadCsv = new System.Windows.Forms.Button();
-        _lblAccount = new System.Windows.Forms.Label();
-        _cmbAccount = new System.Windows.Forms.ComboBox();
-        _btnLogin = new System.Windows.Forms.Button();
         _lblStatus = new System.Windows.Forms.Label();
         _grid = new System.Windows.Forms.DataGridView();
         _colPrompt = new System.Windows.Forms.DataGridViewTextBoxColumn();
@@ -138,36 +132,6 @@ partial class MainForm
         _btnLoadCsv.UseVisualStyleBackColor = true;
         _btnLoadCsv.Click += OnLoadCsvClick;
         //
-        // _lblAccount
-        //
-        _lblAccount.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left;
-        _lblAccount.AutoSize = true;
-        _lblAccount.Location = new System.Drawing.Point(484, 245);
-        _lblAccount.Name = "_lblAccount";
-        _lblAccount.Size = new System.Drawing.Size(56, 15);
-        _lblAccount.TabIndex = 7;
-        _lblAccount.Text = "Account:";
-        //
-        // _cmbAccount
-        //
-        _cmbAccount.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left;
-        _cmbAccount.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
-        _cmbAccount.Location = new System.Drawing.Point(546, 242);
-        _cmbAccount.Name = "_cmbAccount";
-        _cmbAccount.Size = new System.Drawing.Size(180, 23);
-        _cmbAccount.TabIndex = 8;
-        //
-        // _btnLogin
-        //
-        _btnLogin.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left;
-        _btnLogin.Location = new System.Drawing.Point(732, 241);
-        _btnLogin.Name = "_btnLogin";
-        _btnLogin.Size = new System.Drawing.Size(90, 25);
-        _btnLogin.TabIndex = 9;
-        _btnLogin.Text = "Login…";
-        _btnLogin.UseVisualStyleBackColor = true;
-        _btnLogin.Click += OnLoginClick;
-        //
         // _lblStatus
         //
         _lblStatus.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right;
@@ -175,7 +139,7 @@ partial class MainForm
         _lblStatus.Location = new System.Drawing.Point(12, 272);
         _lblStatus.Name = "_lblStatus";
         _lblStatus.Size = new System.Drawing.Size(860, 20);
-        _lblStatus.TabIndex = 10;
+        _lblStatus.TabIndex = 7;
         _lblStatus.Text = "Idle";
         //
         // _grid
@@ -193,7 +157,7 @@ partial class MainForm
         _grid.RowHeadersVisible = false;
         _grid.SelectionMode = System.Windows.Forms.DataGridViewSelectionMode.FullRowSelect;
         _grid.Size = new System.Drawing.Size(860, 292);
-        _grid.TabIndex = 11;
+        _grid.TabIndex = 8;
         //
         // _colPrompt
         //
@@ -237,9 +201,6 @@ partial class MainForm
         ClientSize = new System.Drawing.Size(884, 602);
         Controls.Add(_grid);
         Controls.Add(_lblStatus);
-        Controls.Add(_btnLogin);
-        Controls.Add(_cmbAccount);
-        Controls.Add(_lblAccount);
         Controls.Add(_btnLoadCsv);
         Controls.Add(_btnStop);
         Controls.Add(_btnStart);
@@ -251,7 +212,6 @@ partial class MainForm
         Name = "MainForm";
         StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
         Text = "Gemini Batch Image Generator";
-        Shown += OnShown;
         FormClosed += OnFormClosed;
         ((System.ComponentModel.ISupportInitialize)_numConcurrency).EndInit();
         ((System.ComponentModel.ISupportInitialize)_grid).EndInit();

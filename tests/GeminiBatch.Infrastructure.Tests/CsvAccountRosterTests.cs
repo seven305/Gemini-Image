@@ -24,7 +24,7 @@ public sealed class CsvAccountRosterTests : IDisposable
     }
 
     [Fact]
-    public void Reads_emails_skips_header_and_blank_lines_and_ignores_other_columns()
+    public void Reads_emails_and_credentials_skipping_header_and_blank_lines()
     {
         var path = WriteCsv(
             "Mail,Mail pass,Recovery mail,2FA key\n" +
@@ -36,8 +36,34 @@ public sealed class CsvAccountRosterTests : IDisposable
 
         Assert.Equal(2, accounts.Count);
         Assert.Equal(["alice@gmail.com", "bob@gmail.com"], accounts.Select(a => a.Email));
-        // The account model has no field for a password or 2FA secret, so the ignored columns cannot leak.
         Assert.All(accounts, a => Assert.True(a.Enabled));
+        Assert.Equal(new Domain.AccountCredentials("SECRET_PASS", "recover@x.xyz", "abcd efgh"), accounts[0].Credentials);
+        Assert.Equal("OTHER_PASS", accounts[1].Credentials!.Password);
+    }
+
+    [Fact]
+    public void Missing_optional_columns_are_allowed_and_no_password_means_manual_sign_in()
+    {
+        var path = WriteCsv("alice@gmail.com,pw\nbob@gmail.com\ncarol@gmail.com,pw,,KEY\n");
+
+        var accounts = NewRoster().Read(path);
+
+        Assert.Equal(new Domain.AccountCredentials("pw", null, null), accounts[0].Credentials);
+        Assert.Null(accounts[1].Credentials);
+        Assert.Equal(new Domain.AccountCredentials("pw", null, "KEY"), accounts[2].Credentials);
+    }
+
+    [Fact]
+    public void Credentials_never_appear_in_ToString()
+    {
+        var path = WriteCsv("alice@gmail.com,SECRET_PASS,recover@x.xyz,TOTPKEY\n");
+
+        var account = NewRoster().Read(path).Single();
+
+        var text = account.Credentials!.ToString() + account;
+        Assert.DoesNotContain("SECRET_PASS", text);
+        Assert.DoesNotContain("recover@x.xyz", text);
+        Assert.DoesNotContain("TOTPKEY", text);
     }
 
     [Fact]
@@ -67,6 +93,33 @@ public sealed class CsvAccountRosterTests : IDisposable
         var path = WriteCsv("Mail,Mail pass,Recovery mail,2FA key\n");
 
         Assert.Throws<InvalidDataException>(() => NewRoster().Read(path));
+    }
+
+    [Fact]
+    public void Proxy_column_parses_server_and_decoded_credentials()
+    {
+        var path = WriteCsv(
+            "alice@gmail.com,pw,,,http://user:p%40ss@host:8080\n" +
+            "bob@gmail.com,pw,,,socks5://10.0.0.1:1080\n" +
+            "carol@gmail.com,pw,,,\n");
+
+        var accounts = NewRoster().Read(path);
+
+        Assert.Equal(new Domain.ProxySettings("http://host:8080", "user", "p@ss"), accounts[0].Proxy);
+        Assert.Equal(new Domain.ProxySettings("socks5://10.0.0.1:1080", null, null), accounts[1].Proxy);
+        Assert.Null(accounts[2].Proxy);
+        Assert.DoesNotContain("p@ss", accounts[0].ToString());
+    }
+
+    [Fact]
+    public void Malformed_proxy_fails_the_load_without_echoing_it()
+    {
+        var path = WriteCsv("alice@gmail.com,pw,,,ftp://user:SECRET@host\n");
+
+        var ex = Assert.Throws<InvalidDataException>(() => NewRoster().Read(path));
+
+        Assert.Contains("alice@gmail.com", ex.Message);
+        Assert.DoesNotContain("SECRET", ex.Message);
     }
 
     [Fact]

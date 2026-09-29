@@ -16,9 +16,7 @@ public sealed partial class MainForm : Form
 {
     private readonly BatchProcessor _processor = null!;
     private readonly IPromptSource _promptSource = null!;
-    private readonly IAccountStore _accountStore = null!;
     private readonly ICsvAccountRoster _csvRoster = null!;
-    private readonly IAccountLoginService _loginService = null!;
     private readonly BatchOptions _options = null!;
     private readonly ILogger<MainForm> _logger = null!;
 
@@ -26,8 +24,9 @@ public sealed partial class MainForm : Form
     private CancellationTokenSource? _cts;
     private bool _busy;
 
-    // Accounts loaded from a CSV the operator picked; null = fall back to accounts.json.
-    private IReadOnlyList<GeminiAccount>? _rosterAccounts;
+    // The account CSV the operator picked (re-read on every Start so edits and fresh state are picked up);
+    // null = none chosen yet, so Start asks for one.
+    private string? _rosterCsvPath;
 
     /// <summary>Designer-only constructor. The app always constructs <see cref="MainForm"/> through DI.</summary>
     public MainForm()
@@ -38,18 +37,14 @@ public sealed partial class MainForm : Form
     public MainForm(
         BatchProcessor processor,
         IPromptSource promptSource,
-        IAccountStore accountStore,
         ICsvAccountRoster csvRoster,
-        IAccountLoginService loginService,
         IOptions<BatchOptions> options,
         ILogger<MainForm> logger)
         : this()
     {
         _processor = processor;
         _promptSource = promptSource;
-        _accountStore = accountStore;
         _csvRoster = csvRoster;
-        _loginService = loginService;
         _options = options.Value;
         _logger = logger;
 
@@ -58,11 +53,9 @@ public sealed partial class MainForm : Form
 
     // ---- Event handlers (wired in the designer) ---------------------------------------------
 
-    private async void OnShown(object? sender, EventArgs e) => await RefreshAccountsAsync();
     private async void OnStartClick(object? sender, EventArgs e) => await StartAsync();
     private void OnStopClick(object? sender, EventArgs e) => Stop();
     private void OnLoadCsvClick(object? sender, EventArgs e) => LoadCsv();
-    private async void OnLoginClick(object? sender, EventArgs e) => await LoginAsync();
     private void OnFormClosed(object? sender, FormClosedEventArgs e) => _cts?.Cancel();
 
     // ---- Behavior ---------------------------------------------------------------------------
@@ -76,22 +69,22 @@ public sealed partial class MainForm : Form
             return;
         }
 
-        IReadOnlyList<GeminiAccount> accounts;
-        try
+        // Credentials always come from the CSV: ask for it the first time, then re-read it on every Start so
+        // edits are picked up and no account carries a quarantine over from the previous run.
+        var csvPath = _rosterCsvPath ?? PromptForCsv();
+        if (csvPath is null)
         {
-            accounts = await CurrentAccountsAsync();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to load accounts");
-            MessageBox.Show(this, ex.Message, "Accounts", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            _lblStatus.Text = "Start cancelled — no account CSV";
             return;
         }
 
-        PopulateAccountPicker(accounts);
+        var accounts = LoadRoster(csvPath);
+        if (accounts is null) return;
+
         PopulateGrid(jobs);
         SetRunning(true);
-        _lblStatus.Text = $"Running {jobs.Count} job(s)…";
+        // Each worker signs its account in (one at a time, app-wide) when its profile turns out to be signed out.
+        _lblStatus.Text = $"Signing in accounts and running {jobs.Count} job(s)…";
 
         // Progress<T> captures the UI SynchronizationContext here, so ApplyUpdate always runs on the UI thread.
         var progress = new Progress<JobUpdate>(ApplyUpdate);
@@ -103,6 +96,7 @@ public sealed partial class MainForm : Form
         {
             var result = await Task.Run(() => _processor.RunAsync(jobs, accounts, concurrency, progress, ct), ct);
             _lblStatus.Text = $"Done — completed {result.Completed}, skipped {result.Skipped}, failed {result.Failed} of {result.Total}";
+            ReportSkippedAccounts(accounts);
         }
         catch (OperationCanceledException)
         {
@@ -135,115 +129,61 @@ public sealed partial class MainForm : Form
         _btnStop.Enabled = running;
         _txtPrompts.ReadOnly = running;
         _numConcurrency.Enabled = !running;
-        _btnLogin.Enabled = !running;
         _btnLoadCsv.Enabled = !running;
-        _cmbAccount.Enabled = !running;
     }
 
-    /// <summary>Accounts come from the loaded CSV roster when present, otherwise from accounts.json.</summary>
-    private async Task<IReadOnlyList<GeminiAccount>> CurrentAccountsAsync() =>
-        _rosterAccounts ?? await _accountStore.LoadAsync(CancellationToken.None);
-
-    /// <summary>
-    /// Lets the operator pick a CSV whose first column is the account email. Sign-in stays manual: this
-    /// only builds the account/profile roster; passwords and 2FA secrets in the file are not read.
-    /// </summary>
     private void LoadCsv()
     {
         if (_busy) return;
+        if (PromptForCsv() is { } path)
+            LoadRoster(path);
+    }
 
+    /// <summary>Asks for the account CSV (email, password, recovery email, 2FA key, proxy). Null when cancelled.</summary>
+    private string? PromptForCsv()
+    {
         using var dialog = new OpenFileDialog
         {
-            Title = "Select account CSV (first column = email)",
+            Title = "Select account CSV (email, password, recovery email, 2FA key, proxy)",
             Filter = "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
             CheckFileExists = true,
         };
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-
-        try
-        {
-            var accounts = _csvRoster.Read(dialog.FileName);
-            _rosterAccounts = accounts;
-            PopulateAccountPicker(accounts);
-            _lblStatus.Text = $"Loaded {accounts.Count} account(s) from {Path.GetFileName(dialog.FileName)} — sign each in via Login…";
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to load account CSV {Path}", dialog.FileName);
-            _lblStatus.Text = "CSV not loaded: " + ex.Message;
-            MessageBox.Show(this, ex.Message, "Load CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-    }
-
-    /// <summary>Fills the account picker used by Login. Failures are non-fatal: Start reports them properly.</summary>
-    private async Task RefreshAccountsAsync()
-    {
-        try
-        {
-            PopulateAccountPicker(await CurrentAccountsAsync());
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Could not load accounts for the picker");
-            _lblStatus.Text = "Accounts not loaded: " + ex.Message;
-        }
-    }
-
-    private void PopulateAccountPicker(IReadOnlyList<GeminiAccount> accounts)
-    {
-        var previous = (_cmbAccount.SelectedItem as AccountItem)?.Account.Id;
-        _cmbAccount.Items.Clear();
-        foreach (var account in accounts)
-            _cmbAccount.Items.Add(new AccountItem(account));
-
-        if (_cmbAccount.Items.Count == 0) return;
-        var restored = _cmbAccount.Items.Cast<AccountItem>().ToList().FindIndex(a => a.Account.Id == previous);
-        _cmbAccount.SelectedIndex = restored >= 0 ? restored : 0;
+        return dialog.ShowDialog(this) == DialogResult.OK ? dialog.FileName : null;
     }
 
     /// <summary>
-    /// Opens the selected account's profile so a human can sign in (2FA included). The browser closes
-    /// itself once the session is detected, which also flushes and unlocks the profile for the batch.
+    /// Reads the CSV into fresh accounts and remembers the path. The credentials stay in memory for automated
+    /// sign-in; a row without a password can only be used if its profile is already signed in. Returns null
+    /// (after telling the operator) on error.
     /// </summary>
-    private async Task LoginAsync()
+    private IReadOnlyList<GeminiAccount>? LoadRoster(string csvPath)
     {
-        if (_busy) return;
-        if (_cmbAccount.SelectedItem is not AccountItem item)
-        {
-            MessageBox.Show(this, "No account selected. Check accounts.json.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
-        }
-
-        SetRunning(true);
-        _cts = new CancellationTokenSource();
-        var status = new Progress<string>(text => _lblStatus.Text = text);
         try
         {
-            _lblStatus.Text = "Opening browser…";
-            await _loginService.LoginInteractiveAsync(item.Account, TimeSpan.FromMinutes(15), status, _cts.Token);
-            _lblStatus.Text = $"Signed in: {item.Account.Email}";
-        }
-        catch (OperationCanceledException)
-        {
-            _lblStatus.Text = "Login cancelled";
+            var accounts = _csvRoster.Read(csvPath);
+            _rosterCsvPath = csvPath;
+            var automated = accounts.Count(a => a.Credentials is not null);
+            _lblStatus.Text = $"Loaded {accounts.Count} account(s) from {Path.GetFileName(csvPath)} ({automated} with credentials)";
+            return accounts;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Login failed for account {AccountId}", item.Account.Id);
-            _lblStatus.Text = "Login failed: " + ex.Message;
-            MessageBox.Show(this, ex.Message, "Login", MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
-        finally
-        {
-            _cts.Dispose();
-            _cts = null;
-            SetRunning(false);
+            _logger.LogError(ex, "Failed to load account CSV {Path}", csvPath);
+            _lblStatus.Text = "CSV not loaded: " + ex.Message;
+            MessageBox.Show(this, ex.Message, "Load CSV", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return null;
         }
     }
 
-    private sealed record AccountItem(GeminiAccount Account)
+    /// <summary>Tells the operator which accounts the batch set aside (failed sign-in, repeated failures) and why.</summary>
+    private void ReportSkippedAccounts(IReadOnlyList<GeminiAccount> accounts)
     {
-        public override string ToString() => string.IsNullOrWhiteSpace(Account.Email) ? Account.Id : $"{Account.Id} ({Account.Email})";
+        var skipped = accounts.Where(a => a.IsQuarantined).ToList();
+        if (skipped.Count == 0) return;
+
+        _lblStatus.Text += $" · {skipped.Count} account(s) skipped (see details)";
+        var details = string.Join(Environment.NewLine + Environment.NewLine, skipped.Select(a => $"{a.Email}: {a.QuarantineReason}"));
+        MessageBox.Show(this, details, "Skipped accounts", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
     private void PopulateGrid(IReadOnlyList<PromptJob> jobs)

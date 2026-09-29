@@ -17,7 +17,7 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
-        // Content root = exe folder so appsettings.json /  accounts.json resolve regardless of the launch cwd.
+        // Content root = exe folder so appsettings.json and relative folders resolve regardless of the launch cwd.
         var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
         {
             Args = args,

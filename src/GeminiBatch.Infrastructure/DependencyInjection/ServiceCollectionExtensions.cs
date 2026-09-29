@@ -25,27 +25,24 @@ public static class ServiceCollectionExtensions
     {
         services.Configure<BatchOptions>(configuration.GetSection(BatchOptions.SectionName));
         services.Configure<FakeSessionOptions>(configuration.GetSection(FakeSessionOptions.SectionName));
-        services.Configure<AccountStoreOptions>(configuration.GetSection(AccountStoreOptions.SectionName));
         services.Configure<GeminiSessionOptions>(configuration.GetSection(GeminiSessionOptions.SectionName));
 
         var useFakeSession = configuration.GetValue($"{BatchOptions.SectionName}:{nameof(BatchOptions.UseFakeSession)}", false);
         if (useFakeSession)
         {
             services.AddSingleton<IGeminiSessionFactory, FakeGeminiSessionFactory>();
-            services.AddSingleton<IAccountLoginService, UnavailableAccountLoginService>();
         }
         else
         {
             // One launcher for the whole app: it owns the Playwright driver process.
             services.AddSingleton<PlaywrightBrowserLauncher>();
+            services.AddSingleton<GoogleSignInGate>();
             services.AddSingleton<IGeminiSessionFactory, PlaywrightGeminiSessionFactory>();
-            services.AddSingleton<IAccountLoginService, PlaywrightAccountLoginService>();
         }
 
         services.AddSingleton<IImageStorage, FileSystemImageStorage>();
         services.AddSingleton<IImageProcessor, NullImageProcessor>();
         services.AddSingleton<IJobManifest, JsonJobManifest>();
-        services.AddSingleton<IAccountStore, JsonAccountStore>();
         services.AddSingleton<ICsvAccountRoster, CsvAccountRoster>();
         services.AddSingleton<IPromptSource, TextPromptSource>();
 

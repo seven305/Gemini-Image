@@ -96,6 +96,58 @@ public static class GeminiSelectors
     public static ILocator DownloadFullSizeButton(IPage page) =>
         page.GetByRole(AriaRole.Button, new() { Name = "Download full size image" }).First;
 
+    // ---- Google sign-in (accounts.google.com) -------------------------------------------------
+    // NOT spike-verified: taken from Google's long-standing sign-in form field names, which (unlike the
+    // button labels) are language-independent. Every step is submitted with Enter rather than by clicking
+    // a localized "Next" button. If Google changes a step, the automated login stops at it and the window
+    // stays open for a human to finish — fix the locator here.
+
+    /// <summary>Starts Google sign-in and lands on Gemini afterwards.</summary>
+    public const string SignInUrl = "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fgemini.google.com%2Fapp";
+
+    /// <summary>"Email or phone" field (<c>#identifierId</c>).</summary>
+    public static ILocator SignInEmailInput(IPage page) =>
+        page.Locator("input[type='email'][name='identifier'], input#identifierId").First;
+
+    /// <summary>
+    /// "Enter your password" field. Matched by <c>name='Passwd'</c> because the email step also carries a
+    /// hidden <c>type=password</c> input (<c>hiddenPassword</c>).
+    /// </summary>
+    public static ILocator SignInPasswordInput(IPage page) =>
+        page.Locator("input[type='password'][name='Passwd']").First;
+
+    /// <summary>2-Step Verification "Enter code" field for authenticator-app codes.</summary>
+    public static ILocator SignInTotpInput(IPage page) =>
+        page.Locator("input[name='totpPin'], input#totpPin").First;
+
+    /// <summary>"Confirm your recovery email" challenge field.</summary>
+    public static ILocator SignInRecoveryEmailInput(IPage page) =>
+        page.Locator("input[name='knowledgePreregisteredEmailResponse'], input#knowledge-preregistered-email-response").First;
+
+    /// <summary>"Choose an account" list entry for an account the profile has seen before.</summary>
+    public static ILocator SignInAccountChooserEntry(IPage page, string email) =>
+        page.Locator($"[data-identifier='{email.Replace("'", "\\'")}']").First;
+
+    /// <summary>Challenge picker entry for Google Authenticator codes (<c>data-challengetype="6"</c>).</summary>
+    public static ILocator SignInAuthenticatorOption(IPage page) =>
+        page.Locator("[data-challengetype='6']:not([data-challengeunavailable='true'])").First;
+
+    /// <summary>Challenge picker entry for "Confirm your recovery email" (<c>data-challengetype="12"</c>).</summary>
+    public static ILocator SignInRecoveryEmailOption(IPage page) =>
+        page.Locator("[data-challengetype='12']:not([data-challengeunavailable='true'])").First;
+
+    /// <summary>On a 2SV page that defaulted to e.g. a phone prompt, opens the challenge picker.</summary>
+    public static ILocator SignInTryAnotherWayButton(IPage page) =>
+        page.GetByRole(AriaRole.Button, new() { Name = "Try another way" }).First;
+
+    /// <summary>Optional post-sign-in interstitials (passkey / recovery-info nags). Skipping them is always safe.</summary>
+    public static ILocator SignInSkipInterstitialButton(IPage page) =>
+        page.GetByRole(AriaRole.Button, new() { NameRegex = new System.Text.RegularExpressions.Regex("^(Not now|Skip)$") }).First;
+
+    /// <summary>A CAPTCHA or other challenge that must never be automated.</summary>
+    public static ILocator SignInCaptcha(IPage page) =>
+        page.Locator("#captchaimg, iframe[src*='recaptcha'], iframe[title*='reCAPTCHA']").First;
+
     // ---- Pure helpers -------------------------------------------------------------------------
 
     public static bool IsLoginRedirect(string url) =>

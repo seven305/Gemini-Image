@@ -1,9 +1,0 @@
-// One entry per Google account. userDataDir is that account's private Chrome profile: never share one
-// between accounts, and never open the same profile twice at once (Chrome locks it).
-// Relative paths resolve next to the exe (bin\...), so prefer an absolute path for a profile you want
-// to keep across rebuilds, e.g. "C:\\Area51\\upwork\\Gemini-Image\\profiles\\account-1".
-// Sign each profile in once with the "Login…" button before running a batch.
-// Optional per account: "proxy": { "server": "http://host:port", "username": null, "password": null }
-[
-  { "id": "account-1", "email": "you@example.com", "userDataDir": "profiles/account-1", "enabled": true }
-]

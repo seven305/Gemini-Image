@@ -8,3 +8,5 @@ profiles/
 *.user
 .vs/
 diagnostics/
+# Account rosters hold passwords and 2FA keys — never commit them
+*.csv

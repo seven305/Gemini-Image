@@ -13,8 +13,9 @@ public enum AccountUnavailableReason
 }
 
 /// <summary>
-/// The account behind a session cannot be used right now. Never solved automatically: the worker
-/// quarantines the account and a human re-authenticates the profile. Distinct from
+/// The account behind a session cannot be used right now. Thrown only after the session's one automated
+/// re-sign-in (CSV credentials) has failed or was not possible: the worker quarantines the account and a
+/// human re-authenticates the profile. Distinct from
 /// <see cref="PermanentJobException"/>, which is about the job, not the account.
 /// </summary>
 public sealed class AccountUnavailableException : Exception

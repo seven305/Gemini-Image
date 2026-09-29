@@ -16,17 +16,20 @@ public sealed class PlaywrightGeminiSessionFactory : IGeminiSessionFactory
     private readonly PlaywrightBrowserLauncher _launcher;
     private readonly GeminiSessionOptions _options;
     private readonly BatchOptions _batchOptions;
+    private readonly GoogleSignInGate _signInGate;
     private readonly ILoggerFactory _loggerFactory;
 
     public PlaywrightGeminiSessionFactory(
         PlaywrightBrowserLauncher launcher,
         IOptions<GeminiSessionOptions> options,
         IOptions<BatchOptions> batchOptions,
+        GoogleSignInGate signInGate,
         ILoggerFactory loggerFactory)
     {
         _launcher = launcher;
         _options = options.Value;
         _batchOptions = batchOptions.Value;
+        _signInGate = signInGate;
         _loggerFactory = loggerFactory;
     }
 
@@ -38,7 +41,7 @@ public sealed class PlaywrightGeminiSessionFactory : IGeminiSessionFactory
         {
             var page = context.Pages.Count > 0 ? context.Pages[0] : await context.NewPageAsync().ConfigureAwait(false);
             return new PlaywrightGeminiSession(
-                account, context, page, _options, _batchOptions,
+                account, context, page, _options, _batchOptions, _signInGate,
                 _loggerFactory.CreateLogger<PlaywrightGeminiSession>());
         }
         catch
