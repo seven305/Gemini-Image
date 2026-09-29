@@ -33,7 +33,7 @@ internal sealed class GoogleSignInDriver
     private long _lastTotpStep = -1;
     private DateTime _lastSignInNavigation = DateTime.MinValue;
 
-    private enum Step { SignInPage, AccountChooser, Email, Password, Totp, RecoveryEmail, ChallengePicker, TryAnotherWay, Interstitial }
+    private enum Step { SignInPage, PostSignInPrompt, AccountChooser, Email, Password, Totp, RecoveryEmail, ChallengePicker, TryAnotherWay, Interstitial }
 
     public GoogleSignInDriver(GeminiAccount account, ILogger logger)
     {
@@ -88,6 +88,16 @@ internal sealed class GoogleSignInDriver
         var credentials = _account.Credentials!;
         try
         {
+            if (GeminiSelectors.IsPostSignInPrompt(page.Url))
+            {
+                // Signed in, but Google parked us on a nag page (e.g. recovery options): go straight to Gemini.
+                if (!Attempt(Step.PostSignInPrompt)) return $"Google keeps redirecting to {StripQuery(page.Url)} after sign-in.";
+                _logger.LogInformation("Sign-in {AccountId}: skipping Google's post-sign-in prompt at {Url}; opening Gemini",
+                    _account.Id, StripQuery(page.Url));
+                await page.GotoAsync(GeminiSelectors.AppUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded }).WaitAsync(ct).ConfigureAwait(false);
+                return null;
+            }
+
             if (!GeminiSelectors.IsLoginRedirect(page.Url))
             {
                 // Signed-out Gemini (or a stray page): start the Google flow. Throttled so a slow redirect
@@ -235,7 +245,13 @@ internal sealed class GoogleSignInDriver
     {
         var count = _attempts.GetValueOrDefault(step) + 1;
         _attempts[step] = count;
-        return count <= (step == Step.SignInPage ? MaxSignInPageOpens : MaxAttemptsPerStep);
+        return count <= (step is Step.SignInPage or Step.PostSignInPrompt ? MaxSignInPageOpens : MaxAttemptsPerStep);
+    }
+
+    private static string StripQuery(string url)
+    {
+        var q = url.IndexOf('?');
+        return q < 0 ? url : url[..q];
     }
 
     private static async Task<bool> IsVisibleAsync(ILocator locator)
@@ -247,6 +263,7 @@ internal sealed class GoogleSignInDriver
     private static string Describe(Step step) => step switch
     {
         Step.SignInPage => "open sign-in",
+        Step.PostSignInPrompt => "skip post-sign-in prompt",
         Step.AccountChooser => "choose account",
         Step.Email => "email",
         Step.Password => "password",

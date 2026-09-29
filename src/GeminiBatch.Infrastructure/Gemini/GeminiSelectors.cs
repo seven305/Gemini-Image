@@ -22,6 +22,15 @@ public static class GeminiSelectors
     /// <summary>Any redirect here means the profile is signed out or Google wants re-verification.</summary>
     public const string GoogleAccountsHost = "accounts.google.com";
 
+    /// <summary>
+    /// Google's post-sign-in nag ("add/confirm recovery phone and email"), seen right after a successful login.
+    /// The account is signed in; the page is skipped by opening <see cref="AppUrl"/>.
+    /// </summary>
+    public const string RecoveryOptionsPromptUrl = "https://gds.google.com/web/recoveryoptions";
+
+    /// <summary>Host of Google's post-sign-in prompts (recovery options, home address, security checkup…).</summary>
+    public const string PostSignInPromptHost = "gds.google.com";
+
     /// <summary>Google session cookies; at least one must be present on the Gemini origin when signed in.</summary>
     public static readonly string[] SessionCookieNames = ["SID", "__Secure-1PSID", "__Secure-3PSID"];
 
@@ -152,6 +161,15 @@ public static class GeminiSelectors
 
     public static bool IsLoginRedirect(string url) =>
         url.Contains(GoogleAccountsHost, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True on one of Google's skippable post-sign-in prompts (<c>gds.google.com/web/…</c>, e.g.
+    /// <see cref="RecoveryOptionsPromptUrl"/>). The account is already signed in there; open Gemini instead.
+    /// </summary>
+    public static bool IsPostSignInPrompt(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && string.Equals(uri.Host, PostSignInPromptHost, StringComparison.OrdinalIgnoreCase)
+        && uri.AbsolutePath.StartsWith("/web/", StringComparison.OrdinalIgnoreCase);
 
     public static bool IsSessionCookie(string cookieName) =>
         Array.IndexOf(SessionCookieNames, cookieName) >= 0;

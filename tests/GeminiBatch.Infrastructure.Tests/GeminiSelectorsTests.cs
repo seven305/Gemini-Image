@@ -64,8 +64,23 @@ public sealed class GeminiSelectorsTests
     [Theory]
     [InlineData("https://accounts.google.com/v3/signin/identifier", true)]
     [InlineData("https://gemini.google.com/app", false)]
+    [InlineData("https://gds.google.com/web/recoveryoptions", false)] // signed in; handled by IsPostSignInPrompt
     public void IsLoginRedirect_detects_the_google_sign_in_host(string url, bool expected)
     {
         Assert.Equal(expected, GeminiSelectors.IsLoginRedirect(url));
+    }
+
+    [Theory]
+    [InlineData(GeminiSelectors.RecoveryOptionsPromptUrl, true)]
+    [InlineData("https://gds.google.com/web/recoveryoptions?continue=https%3A%2F%2Fgemini.google.com%2Fapp&hl=en", true)]
+    [InlineData("https://GDS.google.com/web/homeaddress", true)]
+    [InlineData("https://gemini.google.com/app", false)]
+    [InlineData("https://accounts.google.com/v3/signin/identifier", false)]
+    [InlineData("https://gds.google.com.evil.example/web/recoveryoptions", false)]
+    [InlineData("about:blank", false)]
+    [InlineData("", false)]
+    public void IsPostSignInPrompt_detects_googles_post_sign_in_nag_pages(string url, bool expected)
+    {
+        Assert.Equal(expected, GeminiSelectors.IsPostSignInPrompt(url));
     }
 }

@@ -143,24 +143,34 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     /// <summary>Loads /app; returns the reason the account is unusable, or null when it is signed in and ready.</summary>
     private async Task<AccountUnavailableException?> TryOpenSignedInChatAsync(CancellationToken ct)
     {
-        await _page.GotoAsync(GeminiSelectors.AppUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded })
-            .WaitAsync(ct).ConfigureAwait(false);
-
-        try
+        // Google may park a signed-in profile on a post-sign-in prompt (e.g. recovery options) instead of Gemini,
+        // either as a server redirect or from page script after load. Skip it by reopening Gemini, a couple of times.
+        for (var promptSkips = 0; ; promptSkips++)
         {
-            await GeminiSelectors.PromptBox(_page)
-                .WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = Ms(_options.NavigationTimeoutSeconds) })
+            await _page.GotoAsync(GeminiSelectors.AppUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded })
                 .WaitAsync(ct).ConfigureAwait(false);
-        }
-        catch (TimeoutException ex)
-        {
-            if (GeminiSelectors.IsLoginRedirect(_page.Url))
-                return new AccountUnavailableException(AccountUnavailableReason.Challenged,
-                    $"Redirected to a Google sign-in/verification page: {_page.Url}", ex);
+            if (IsOnPostSignInPrompt(promptSkips, out var stuck))
+            {
+                if (stuck is not null) return stuck;
+                continue;
+            }
 
-            throw new AccountUnavailableException(AccountUnavailableReason.SurfaceUnavailable,
-                $"Gemini prompt box did not appear within {_options.NavigationTimeoutSeconds}s at {_page.Url}. " +
-                "The page may be blocked, down, or the UI changed (check GeminiSelectors).", ex);
+            try
+            {
+                await GeminiSelectors.PromptBox(_page)
+                    .WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = Ms(_options.NavigationTimeoutSeconds) })
+                    .WaitAsync(ct).ConfigureAwait(false);
+                break;
+            }
+            catch (TimeoutException ex)
+            {
+                if (IsOnPostSignInPrompt(promptSkips, out stuck))
+                {
+                    if (stuck is not null) return stuck;
+                    continue;
+                }
+                return PromptBoxMissing(ex);
+            }
         }
 
         var state = await GeminiSignInCheck.ProbeAsync(_context, _page).ConfigureAwait(false);
@@ -171,6 +181,41 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         return new AccountUnavailableException(reason,
             $"Account {_account.Id} is not signed in (sessionCookie={state.HasSessionCookie}, signInButton={state.SignInButtonVisible}, url={state.Url}). " +
             "Add a password (and 2FA key) for it in the CSV, or sign the profile in manually.");
+    }
+
+    private const int MaxPostSignInPromptSkips = 2;
+
+    /// <summary>
+    /// True when the page is on a Google post-sign-in prompt. <paramref name="stuck"/> is null when the caller should
+    /// reopen Gemini, or the account-unavailable reason once the skips are used up.
+    /// </summary>
+    private bool IsOnPostSignInPrompt(int skipsSoFar, out AccountUnavailableException? stuck)
+    {
+        stuck = null;
+        if (!GeminiSelectors.IsPostSignInPrompt(_page.Url)) return false;
+
+        var url = _page.Url.Split('?')[0];
+        if (skipsSoFar >= MaxPostSignInPromptSkips)
+        {
+            stuck = new AccountUnavailableException(AccountUnavailableReason.Challenged,
+                $"Google keeps redirecting {_account.Id} to {url} instead of Gemini.");
+            return true;
+        }
+
+        _logger.LogInformation("Skipping Google's post-sign-in prompt at {Url} for {AccountId}; reopening Gemini", url, _account.Id);
+        return true;
+    }
+
+    /// <summary>The prompt box never showed up on a non-prompt page: a sign-in wall (returned) or a broken surface (thrown).</summary>
+    private AccountUnavailableException PromptBoxMissing(TimeoutException ex)
+    {
+        if (GeminiSelectors.IsLoginRedirect(_page.Url))
+            return new AccountUnavailableException(AccountUnavailableReason.Challenged,
+                $"Redirected to a Google sign-in/verification page: {_page.Url}", ex);
+
+        throw new AccountUnavailableException(AccountUnavailableReason.SurfaceUnavailable,
+            $"Gemini prompt box did not appear within {_options.NavigationTimeoutSeconds}s at {_page.Url}. " +
+            "The page may be blocked, down, or the UI changed (check GeminiSelectors).", ex);
     }
 
     /// <summary>
