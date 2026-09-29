@@ -19,4 +19,16 @@ public sealed class FakeSessionOptions
 
     /// <summary>Accounts whose EnsureReadyAsync throws — simulates a signed-out / broken profile.</summary>
     public string[] ReadyFailAccountIds { get; set; } = [];
+
+    /// <summary>
+    /// Accounts that hit an auth wall (<c>AccountUnavailableException</c>, Challenged) after
+    /// <see cref="AccountLossAfterCalls"/> prompts — drives quarantine + requeue.
+    /// </summary>
+    public string[] UnavailableAccountIds { get; set; } = [];
+
+    /// <summary>Accounts whose first browser "crashes" after <see cref="AccountLossAfterCalls"/> prompts — drives relaunch.</summary>
+    public string[] SessionLostAccountIds { get; set; } = [];
+
+    /// <summary>How many prompts the accounts above complete before they fail.</summary>
+    public int AccountLossAfterCalls { get; set; } = 2;
 }

@@ -63,7 +63,16 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   `TotpGenerator`; once per session, one account at a time), `AccountUnavailableException`,
   `Batch:UseFakeSession` switch, failure diagnostics (screenshot + ARIA snapshot).
   Verified so far: DI both ways, Chrome launch, signed-out detection, 25 unit tests.
-- Next: Phase 3 concurrency hardening, Phase 4 UI polish, Phase 5 deploy. Bonus: CSV, naming, EXIF.
+- Phase 3 (concurrency & resilience): code complete, awaiting the 5-account live milestone run.
+  `BatchProcessor`: unbounded queue filled up front; an `AccountUnavailableException` is terminal for the
+  account (never retried) and its job is requeued to a healthy worker; the job that trips
+  `AccountFailureThreshold` is requeued too; `SessionLost` (browser crashed/closed) relaunches the session up to
+  `MaxSessionRestarts` before quarantining; duplicate `ManifestKey`s in a batch are skipped; the manifest is
+  re-checked at pickup and before save; the commit (strip + manifest) is non-cancellable once the file is saved;
+  `StartupStaggerMs` staggers launches; accounts sharing an email/profile dir get one worker. `BatchResult` carries
+  `StopReason` + `QuarantinedAccounts`. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
+  `Fake:UnavailableAccountIds` / `SessionLostAccountIds` / `AccountLossAfterCalls` reproduce the failure paths offline.
+- Next: Phase 4 UI polish, Phase 5 deploy. Bonus: CSV, naming, EXIF.
 
 ## Build / run
 `dotnet build` (all projects green), `dotnet test` (Application + Infrastructure suites).

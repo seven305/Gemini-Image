@@ -47,9 +47,16 @@ public sealed class InMemoryManifest : IJobManifest
 
     public bool IsCompleted(string key) => _entries.ContainsKey(key);
 
+    /// <summary>How many times each key was marked completed; anything above 1 is a double save.</summary>
+    public ConcurrentDictionary<string, int> MarkCounts { get; } = new();
+
+    /// <summary>Simulates the key being completed elsewhere (another worker, an earlier run) mid-batch.</summary>
+    public void CompleteExternally(string key) => _entries[key] = "external";
+
     public Task MarkCompletedAsync(string key, string savedPath, CancellationToken ct)
     {
         _entries[key] = savedPath;
+        MarkCounts.AddOrUpdate(key, 1, (_, n) => n + 1);
         return Task.CompletedTask;
     }
 }

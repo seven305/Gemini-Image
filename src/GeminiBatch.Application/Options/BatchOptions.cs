@@ -12,6 +12,13 @@ public sealed class BatchOptions
     public int GenerationTimeoutSeconds { get; set; } = 180;
     public int MinInterPromptDelayMs { get; set; } = 1000;
     public int MaxInterPromptDelayMs { get; set; } = 3000;
+
+    /// <summary>Worker i waits about i × this (plus jitter) before launching, so sessions don't hit Gemini in lockstep. 0 = off.</summary>
+    public int StartupStaggerMs { get; set; } = 4000;
+
+    /// <summary>How many times a worker relaunches a session whose browser died before quarantining its account.</summary>
+    public int MaxSessionRestarts { get; set; } = 1;
+
     public bool StripMetadata { get; set; } = true;
     public bool Headful { get; set; } = true;
 

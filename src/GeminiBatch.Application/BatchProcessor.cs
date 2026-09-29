@@ -12,13 +12,17 @@ using Polly.Retry;
 namespace GeminiBatch.Application;
 
 /// <summary>
-/// Fans a list of prompt jobs out over N workers, one per enabled account. Each worker owns a single
-/// <see cref="IGeminiSession"/> for its lifetime. Per-job retries use exponential backoff with jitter;
-/// an account is quarantined after <see cref="BatchOptions.AccountFailureThreshold"/> consecutive job
-/// failures and the batch carries on with whatever accounts remain.
+/// Fans a list of prompt jobs out over N workers, one per eligible account. Each worker owns a single
+/// <see cref="IGeminiSession"/> at a time. Per-job retries use exponential backoff with jitter for transient
+/// failures; an <see cref="AccountUnavailableException"/> (auth wall, CAPTCHA, dead browser) is terminal for the
+/// account, not the job: the job goes back on the queue for a healthy worker. An account is also quarantined after
+/// <see cref="BatchOptions.AccountFailureThreshold"/> consecutive job failures. The batch carries on with whatever
+/// accounts remain; the manifest is checked before every save so no key is ever completed twice.
 /// </summary>
 public sealed class BatchProcessor
 {
+    private const string NoHealthyAccounts = "No healthy accounts remaining.";
+
     private static readonly ResiliencePropertyKey<PromptJob> JobKey = new("GeminiBatch.Job");
     private static readonly ResiliencePropertyKey<IProgress<JobUpdate>> ProgressKey = new("GeminiBatch.Progress");
 
@@ -60,109 +64,128 @@ public sealed class BatchProcessor
 
         await _manifest.LoadAsync(ct).ConfigureAwait(false);
 
-        var eligible = accounts.Where(a => a.Enabled && !a.IsQuarantined).ToList();
+        var eligible = SelectEligible(accounts);
         if (eligible.Count == 0)
             throw new InvalidOperationException("No enabled, non-quarantined accounts are available.");
 
-        var workerCount = Math.Clamp(concurrency, 1, eligible.Count);
-        var counters = new Counters();
+        var workerAccounts = eligible.Take(Math.Clamp(concurrency, 1, eligible.Count)).ToList();
+        var run = new RunState();
 
-        var channel = Channel.CreateBounded<PromptJob>(new BoundedChannelOptions(workerCount * 2)
+        // The whole batch is queued up front (it is small); workers put jobs back when their account dies.
+        var keysInBatch = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var job in jobs)
         {
-            SingleWriter = true,
-            SingleReader = workerCount == 1,
-        });
+            using var jobScope = BeginJobScope(job);
+            if (_manifest.IsCompleted(job.ManifestKey))
+            {
+                SetStatus(job, JobStatus.Skipped, progress);
+                run.CountSkipped();
+                _logger.LogInformation("Skipping job {JobId}: manifest key {ManifestKey} already completed", job.Id, job.ManifestKey);
+            }
+            else if (!keysInBatch.Add(job.ManifestKey))
+            {
+                job.LastError = "Duplicate of an earlier prompt/file name in this batch.";
+                SetStatus(job, JobStatus.Skipped, progress);
+                run.CountSkipped();
+                _logger.LogWarning("Skipping job {JobId}: manifest key {ManifestKey} appears earlier in this batch", job.Id, job.ManifestKey);
+            }
+            else
+            {
+                run.Enqueue(job);
+            }
+        }
+        run.CompleteIfNothingOutstanding();
 
-        // The producer must stop blocking on a full channel once every worker has died, otherwise the
-        // batch would hang forever. Workers cancel this token when the last one exits.
-        using var producerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        var activeWorkers = workerCount;
+        _logger.LogInformation("Starting batch: {JobCount} jobs ({Queued} queued) across {WorkerCount} workers",
+            jobs.Count, run.Outstanding, workerAccounts.Count);
 
-        _logger.LogInformation("Starting batch: {JobCount} jobs across {WorkerCount} workers", jobs.Count, workerCount);
-
-        var producer = Task.Run(() => ProduceAsync(jobs, channel.Writer, progress, counters, producerCts.Token), CancellationToken.None);
-
-        var workers = eligible.Take(workerCount).Select(account => Task.Run(async () =>
+        run.ActiveWorkers = workerAccounts.Count;
+        var workers = workerAccounts.Select((account, index) => Task.Run(async () =>
         {
             try
             {
-                await WorkerAsync(account, channel.Reader, progress, counters, ct).ConfigureAwait(false);
+                await WorkerAsync(account, index, run, progress, ct).ConfigureAwait(false);
             }
             finally
             {
-                if (Interlocked.Decrement(ref activeWorkers) == 0)
-                    producerCts.Cancel();
+                // With no worker left nobody can finish the outstanding jobs; stop waiting for them.
+                if (Interlocked.Decrement(ref run.ActiveWorkers) == 0)
+                    run.Writer.TryComplete();
             }
         }, CancellationToken.None)).ToArray();
 
         try
         {
-            await Task.WhenAll(workers.Append(producer)).ConfigureAwait(false);
+            await Task.WhenAll(workers).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            _logger.LogWarning("Batch cancelled. Completed={Completed} Skipped={Skipped} Failed={Failed}",
-                counters.Completed, counters.Skipped, counters.Failed);
+            LogSummary("cancelled", BuildResult(jobs, run, workerAccounts));
             throw;
         }
 
-        // Anything still Pending here was never picked up because every worker died. It is not a
-        // cancellation, so report it as a failure rather than leaving it silently unprocessed.
-        foreach (var job in jobs.Where(j => j.Status == JobStatus.Pending))
+        // Anything still queued was never picked up because every worker died. Report it as a failure rather
+        // than leaving it silently unprocessed.
+        while (run.Reader.TryRead(out var leftover))
         {
-            job.Status = JobStatus.Failed;
-            job.LastError = "No healthy accounts remaining.";
-            counters.IncrementFailed();
-            progress.Report(JobUpdate.From(job));
+            leftover.AssignedAccountId = null;
+            leftover.LastError = NoHealthyAccounts;
+            SetStatus(leftover, JobStatus.Failed, progress);
+            run.CountFailed();
         }
 
-        var result = new BatchResult(jobs.Count, counters.Completed, counters.Skipped, counters.Failed);
-        _logger.LogInformation("Batch finished: {@Result}", result);
+        var result = BuildResult(jobs, run, workerAccounts);
+        LogSummary("finished", result);
         return result;
     }
 
-    private async Task ProduceAsync(
-        IReadOnlyList<PromptJob> jobs,
-        ChannelWriter<PromptJob> writer,
-        IProgress<JobUpdate> progress,
-        Counters counters,
-        CancellationToken ct)
+    /// <summary>
+    /// Enabled, non-quarantined accounts, one per Google account and per profile directory: a profile can only be
+    /// open in one browser, and two browsers on one account would look like exactly the traffic we avoid.
+    /// </summary>
+    private List<GeminiAccount> SelectEligible(IReadOnlyList<GeminiAccount> accounts)
     {
-        try
-        {
-            foreach (var job in jobs)
-            {
-                if (_manifest.IsCompleted(job.ManifestKey))
-                {
-                    job.Status = JobStatus.Skipped;
-                    counters.IncrementSkipped();
-                    progress.Report(JobUpdate.From(job));
-                    _logger.LogInformation("Skipping job {JobId}: manifest key {ManifestKey} already completed", job.Id, job.ManifestKey);
-                    continue;
-                }
+        var emails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var profiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var eligible = new List<GeminiAccount>();
 
-                await writer.WriteAsync(job, ct).ConfigureAwait(false);
+        foreach (var account in accounts.Where(a => a.Enabled && !a.IsQuarantined))
+        {
+            if (!emails.Add(account.Email.Trim()) || !profiles.Add(Path.GetFullPath(account.UserDataDir)))
+            {
+                _logger.LogWarning("Account {AccountId} not used: it shares an email or profile directory with an earlier account", account.Id);
+                continue;
             }
+            eligible.Add(account);
         }
-        catch (OperationCanceledException)
-        {
-            // Either the user cancelled (propagated by the workers) or all workers died; both end the batch.
-        }
-        finally
-        {
-            writer.Complete();
-        }
+        return eligible;
     }
 
-    private async Task WorkerAsync(
-        GeminiAccount account,
-        ChannelReader<PromptJob> reader,
-        IProgress<JobUpdate> progress,
-        Counters counters,
-        CancellationToken ct)
+    private async Task WorkerAsync(GeminiAccount account, int index, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)
     {
         using var accountScope = _logger.BeginScope(new Dictionary<string, object?> { ["AccountId"] = account.Id });
 
+        await StartupStaggerAsync(index, ct).ConfigureAwait(false);
+
+        for (var restarts = 0; ; restarts++)
+        {
+            var exit = await RunSessionAsync(account, run, progress, ct).ConfigureAwait(false);
+            if (exit != SessionExit.SessionLost)
+                return;
+
+            if (restarts >= _options.MaxSessionRestarts)
+            {
+                QuarantineAccount(account, $"Browser session lost {restarts + 1} time(s)");
+                return;
+            }
+            _logger.LogWarning("Browser session for {AccountId} was lost; relaunching ({Restart}/{Max})",
+                account.Id, restarts + 1, _options.MaxSessionRestarts);
+        }
+    }
+
+    /// <summary>One session's lifetime: launch, get ready, then pull jobs until the queue drains or the account/session dies.</summary>
+    private async Task<SessionExit> RunSessionAsync(GeminiAccount account, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)
+    {
         IGeminiSession session;
         try
         {
@@ -174,9 +197,9 @@ public sealed class BatchProcessor
         }
         catch (Exception ex)
         {
-            account.Quarantine($"Session creation failed: {ex.Message}");
-            _logger.LogError(ex, "Account {AccountId} quarantined: session creation failed", account.Id);
-            return;
+            _logger.LogError(ex, "Session creation failed for {AccountId}", account.Id);
+            QuarantineAccount(account, $"Session creation failed: {ex.Message}");
+            return SessionExit.Quarantined;
         }
 
         await using (session.ConfigureAwait(false))
@@ -189,61 +212,99 @@ public sealed class BatchProcessor
             {
                 throw;
             }
+            catch (AccountUnavailableException ex) when (ex.Reason == AccountUnavailableReason.SessionLost)
+            {
+                _logger.LogWarning(ex, "Browser session for {AccountId} was lost while getting ready", account.Id);
+                return SessionExit.SessionLost;
+            }
             catch (Exception ex)
             {
-                account.Quarantine($"Session not ready: {ex.Message}");
-                _logger.LogError(ex, "Account {AccountId} quarantined: session failed to become ready", account.Id);
-                return;
+                _logger.LogError(ex, "Session for {AccountId} failed to become ready", account.Id);
+                QuarantineAccount(account, $"Session not ready: {ex.Message}");
+                return SessionExit.Quarantined;
             }
 
             var consecutiveFailures = 0;
 
-            await foreach (var job in reader.ReadAllAsync(ct).ConfigureAwait(false))
+            await foreach (var job in run.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
+                using var jobScope = BeginJobScope(job);
                 job.AssignedAccountId = account.Id;
-                bool succeeded;
-                using (_logger.BeginScope(new Dictionary<string, object?> { ["JobId"] = job.Id }))
-                {
-                    succeeded = await ProcessJobAsync(job, session, progress, ct).ConfigureAwait(false);
-                }
+                var (outcome, error) = await ProcessJobAsync(job, session, progress, ct).ConfigureAwait(false);
 
-                if (succeeded)
+                switch (outcome)
                 {
-                    consecutiveFailures = 0;
-                    counters.IncrementCompleted();
-                }
-                else
-                {
-                    consecutiveFailures++;
-                    counters.IncrementFailed();
+                    case JobOutcome.Completed:
+                        consecutiveFailures = 0;
+                        run.Finish(JobStatus.Completed);
+                        break;
 
-                    if (consecutiveFailures >= _options.AccountFailureThreshold)
-                    {
-                        account.Quarantine($"{consecutiveFailures} consecutive job failures");
-                        _logger.LogWarning("Account {AccountId} quarantined after {Failures} consecutive job failures; worker exiting",
-                            account.Id, consecutiveFailures);
-                        return;
-                    }
+                    case JobOutcome.Skipped:
+                        run.Finish(JobStatus.Skipped);
+                        continue; // nothing was sent to Gemini, so no pacing delay either
+
+                    case JobOutcome.FailedPermanent:
+                        // About the prompt, not the account: it does not count toward quarantine.
+                        FailJob(job, error!, progress);
+                        run.Finish(JobStatus.Failed);
+                        break;
+
+                    case JobOutcome.Failed:
+                        consecutiveFailures++;
+                        if (consecutiveFailures >= _options.AccountFailureThreshold)
+                        {
+                            // The failures point at the account, so this job gets another chance elsewhere.
+                            Requeue(job, run, progress, $"Moved off account {account.Id}: {error!.Message}");
+                            QuarantineAccount(account, $"{consecutiveFailures} consecutive job failures");
+                            return SessionExit.Quarantined;
+                        }
+                        FailJob(job, error!, progress);
+                        run.Finish(JobStatus.Failed);
+                        break;
+
+                    case JobOutcome.AccountLost:
+                        var unavailable = (AccountUnavailableException)error!;
+                        Requeue(job, run, progress, $"Moved off account {account.Id}: {unavailable.Message}");
+                        if (unavailable.Reason == AccountUnavailableReason.SessionLost)
+                        {
+                            _logger.LogWarning(unavailable, "Browser session for {AccountId} was lost during job {JobId}", account.Id, job.Id);
+                            return SessionExit.SessionLost;
+                        }
+                        QuarantineAccount(account, $"{unavailable.Reason}: {unavailable.Message}");
+                        return SessionExit.Quarantined;
                 }
 
                 await InterPromptDelayAsync(ct).ConfigureAwait(false);
             }
+
+            return SessionExit.QueueDrained;
         }
     }
 
-    /// <summary>Runs one job through the retry pipeline. Returns true on success, false once retries are exhausted.</summary>
-    private async Task<bool> ProcessJobAsync(PromptJob job, IGeminiSession session, IProgress<JobUpdate> progress, CancellationToken ct)
+    /// <summary>
+    /// Runs one job through the retry pipeline. Never marks the job Failed itself: the worker decides between
+    /// failing it and handing it to another account.
+    /// </summary>
+    private async Task<(JobOutcome Outcome, Exception? Error)> ProcessJobAsync(
+        PromptJob job, IGeminiSession session, IProgress<JobUpdate> progress, CancellationToken ct)
     {
+        // A requeued job, or a key completed since the batch started, must not be generated (and saved) again.
+        if (_manifest.IsCompleted(job.ManifestKey))
+        {
+            SkipAlreadyCompleted(job, progress);
+            return (JobOutcome.Skipped, null);
+        }
+
         var context = ResilienceContextPool.Shared.Get(ct);
         context.Properties.Set(JobKey, job);
         context.Properties.Set(ProgressKey, progress);
 
         try
         {
-            await _retryPipeline.ExecuteAsync(
+            var saved = await _retryPipeline.ExecuteAsync(
                 async ctx => await AttemptAsync(job, session, progress, ctx.CancellationToken).ConfigureAwait(false),
                 context).ConfigureAwait(false);
-            return true;
+            return (saved ? JobOutcome.Completed : JobOutcome.Skipped, null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -252,13 +313,17 @@ public sealed class BatchProcessor
             progress.Report(JobUpdate.From(job));
             throw;
         }
+        catch (AccountUnavailableException ex)
+        {
+            return (JobOutcome.AccountLost, ex);
+        }
+        catch (PermanentJobException ex)
+        {
+            return (JobOutcome.FailedPermanent, ex);
+        }
         catch (Exception ex)
         {
-            job.Status = JobStatus.Failed;
-            job.LastError = ex.Message;
-            progress.Report(JobUpdate.From(job));
-            _logger.LogError(ex, "Job {JobId} failed after {Attempts} attempt(s)", job.Id, job.Attempts);
-            return false;
+            return (JobOutcome.Failed, ex);
         }
         finally
         {
@@ -266,8 +331,11 @@ public sealed class BatchProcessor
         }
     }
 
-    /// <summary>A single generate → save → strip → manifest attempt. Any exception here is judged by the retry policy.</summary>
-    private async ValueTask AttemptAsync(PromptJob job, IGeminiSession session, IProgress<JobUpdate> progress, CancellationToken ct)
+    /// <summary>
+    /// A single generate → save → strip → manifest attempt. Any exception here is judged by the retry policy.
+    /// Returns false when the key turned out to be completed already (nothing saved).
+    /// </summary>
+    private async ValueTask<bool> AttemptAsync(PromptJob job, IGeminiSession session, IProgress<JobUpdate> progress, CancellationToken ct)
     {
         job.Attempts++;
         SetStatus(job, JobStatus.Running, progress);
@@ -293,6 +361,11 @@ public sealed class BatchProcessor
         string savedPath;
         try
         {
+            if (_manifest.IsCompleted(job.ManifestKey))
+            {
+                SkipAlreadyCompleted(job, progress);
+                return false;
+            }
             savedPath = await _storage.SaveAsync(image.TempFilePath, job.DesiredFileName ?? image.SuggestedFileName, ct).ConfigureAwait(false);
         }
         finally
@@ -300,15 +373,73 @@ public sealed class BatchProcessor
             TryDelete(image.TempFilePath);
         }
 
-        if (_options.StripMetadata)
-            await _imageProcessor.StripMetadataAsync(savedPath, ct).ConfigureAwait(false);
+        // The file is on disk now: finish the commit even if Stop was pressed, so there is never a saved image
+        // without its manifest entry (a resume would generate it again as name_2). If the commit itself fails,
+        // remove the file for the same reason before the retry policy takes over.
+        try
+        {
+            if (_options.StripMetadata)
+                await _imageProcessor.StripMetadataAsync(savedPath, CancellationToken.None).ConfigureAwait(false);
 
-        await _manifest.MarkCompletedAsync(job.ManifestKey, savedPath, ct).ConfigureAwait(false);
+            await _manifest.MarkCompletedAsync(job.ManifestKey, savedPath, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            TryDelete(savedPath);
+            throw;
+        }
 
         job.SavedPath = savedPath;
         job.LastError = null;
         SetStatus(job, JobStatus.Completed, progress);
         _logger.LogInformation("Job {JobId} completed -> {SavedPath}", job.Id, savedPath);
+        return true;
+    }
+
+    private void Requeue(PromptJob job, RunState run, IProgress<JobUpdate> progress, string reason)
+    {
+        job.AssignedAccountId = null;
+        job.LastError = reason;
+
+        // The job still counts as outstanding, so the queue cannot have been completed under us.
+        if (!run.Writer.TryWrite(job))
+        {
+            _logger.LogError("Could not requeue job {JobId}; failing it", job.Id);
+            SetStatus(job, JobStatus.Failed, progress);
+            run.Finish(JobStatus.Failed);
+            return;
+        }
+
+        SetStatus(job, JobStatus.Pending, progress);
+        _logger.LogWarning("Job {JobId} requeued for another account: {Reason}", job.Id, reason);
+    }
+
+    private void FailJob(PromptJob job, Exception error, IProgress<JobUpdate> progress)
+    {
+        job.LastError = error.Message;
+        SetStatus(job, JobStatus.Failed, progress);
+        _logger.LogError(error, "Job {JobId} failed after {Attempts} attempt(s)", job.Id, job.Attempts);
+    }
+
+    private void SkipAlreadyCompleted(PromptJob job, IProgress<JobUpdate> progress)
+    {
+        SetStatus(job, JobStatus.Skipped, progress);
+        _logger.LogInformation("Job {JobId}: manifest key {ManifestKey} already completed; not saving again", job.Id, job.ManifestKey);
+    }
+
+    private void QuarantineAccount(GeminiAccount account, string reason)
+    {
+        account.Quarantine(reason);
+        _logger.LogWarning("Account {AccountId} quarantined: {Reason}", account.Id, reason);
+    }
+
+    private async Task StartupStaggerAsync(int workerIndex, CancellationToken ct)
+    {
+        var stagger = Math.Max(0, _options.StartupStaggerMs);
+        if (stagger == 0 || workerIndex == 0) return;
+        var delay = workerIndex * stagger + Random.Shared.Next(0, stagger / 2 + 1);
+        _logger.LogDebug("Staggering start by {Delay} ms", delay);
+        await Task.Delay(delay, ct).ConfigureAwait(false);
     }
 
     private async Task InterPromptDelayAsync(CancellationToken ct)
@@ -346,7 +477,36 @@ public sealed class BatchProcessor
         }).Build();
     }
 
-    private static bool IsTransient(Exception ex) => ex is not (OperationCanceledException or PermanentJobException);
+    /// <summary>Timeouts, navigation and download hiccups are retried; a refused prompt or an unusable account are not.</summary>
+    private static bool IsTransient(Exception ex) =>
+        ex is not (OperationCanceledException or PermanentJobException or AccountUnavailableException);
+
+    private IDisposable? BeginJobScope(PromptJob job) =>
+        _logger.BeginScope(new Dictionary<string, object?> { ["JobId"] = job.Id });
+
+    private static BatchResult BuildResult(IReadOnlyList<PromptJob> jobs, RunState run, IReadOnlyList<GeminiAccount> workerAccounts)
+    {
+        var quarantined = workerAccounts
+            .Where(a => a.IsQuarantined)
+            .Select(a => new QuarantinedAccount(a.Id, a.Email, a.QuarantineReason ?? "unknown"))
+            .ToList();
+
+        return new BatchResult(jobs.Count, run.Completed, run.Skipped, run.Failed)
+        {
+            StopReason = quarantined.Count == workerAccounts.Count ? BatchStopReason.AllAccountsQuarantined : BatchStopReason.Finished,
+            QuarantinedAccounts = quarantined,
+        };
+    }
+
+    private void LogSummary(string how, BatchResult result)
+    {
+        _logger.LogInformation(
+            "Batch {How} ({StopReason}): total={Total} completed={Completed} skipped={Skipped} failed={Failed} remaining={Remaining} quarantinedAccounts={Quarantined}",
+            how, result.StopReason, result.Total, result.Completed, result.Skipped, result.Failed, result.Remaining, result.QuarantinedAccounts.Count);
+
+        foreach (var account in result.QuarantinedAccounts)
+            _logger.LogWarning("Quarantined account {AccountId}: {Reason}", account.Id, account.Reason);
+    }
 
     private static void SetStatus(PromptJob job, JobStatus status, IProgress<JobUpdate> progress)
     {
@@ -364,14 +524,56 @@ public sealed class BatchProcessor
         catch (UnauthorizedAccessException) { }
     }
 
-    private sealed class Counters
+    private enum JobOutcome { Completed, Skipped, Failed, FailedPermanent, AccountLost }
+
+    private enum SessionExit { QueueDrained, Quarantined, SessionLost }
+
+    /// <summary>
+    /// The shared job queue plus counters. A job is "outstanding" from enqueue until it reaches a terminal state;
+    /// requeueing keeps it outstanding. The queue completes when nothing is outstanding (or no worker is left).
+    /// </summary>
+    private sealed class RunState
     {
-        private int _completed, _skipped, _failed;
+        private readonly Channel<PromptJob> _channel = Channel.CreateUnbounded<PromptJob>();
+        private int _completed, _skipped, _failed, _outstanding;
+
+        public int ActiveWorkers;
+
+        public ChannelReader<PromptJob> Reader => _channel.Reader;
+        public ChannelWriter<PromptJob> Writer => _channel.Writer;
+
         public int Completed => Volatile.Read(ref _completed);
         public int Skipped => Volatile.Read(ref _skipped);
         public int Failed => Volatile.Read(ref _failed);
-        public void IncrementCompleted() => Interlocked.Increment(ref _completed);
-        public void IncrementSkipped() => Interlocked.Increment(ref _skipped);
-        public void IncrementFailed() => Interlocked.Increment(ref _failed);
+        public int Outstanding => Volatile.Read(ref _outstanding);
+
+        public void Enqueue(PromptJob job)
+        {
+            Interlocked.Increment(ref _outstanding);
+            _channel.Writer.TryWrite(job);
+        }
+
+        public void CompleteIfNothingOutstanding()
+        {
+            if (Outstanding == 0) _channel.Writer.TryComplete();
+        }
+
+        /// <summary>An outstanding job reached a terminal state.</summary>
+        public void Finish(JobStatus terminal)
+        {
+            switch (terminal)
+            {
+                case JobStatus.Completed: Interlocked.Increment(ref _completed); break;
+                case JobStatus.Skipped: Interlocked.Increment(ref _skipped); break;
+                default: Interlocked.Increment(ref _failed); break;
+            }
+
+            if (Interlocked.Decrement(ref _outstanding) == 0)
+                _channel.Writer.TryComplete();
+        }
+
+        /// <summary>A job that never became outstanding (skipped up front, or failed while draining the queue).</summary>
+        public void CountSkipped() => Interlocked.Increment(ref _skipped);
+        public void CountFailed() => Interlocked.Increment(ref _failed);
     }
 }

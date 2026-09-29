@@ -33,6 +33,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     private IPage _page;
     private bool _disposed;
     private bool _autoSignInAttempted;
+    private volatile bool _contextClosed;
 
     public PlaywrightGeminiSession(
         GeminiAccount account,
@@ -52,6 +53,9 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         _logger = logger;
         _tempDir = Path.Combine(Path.GetTempPath(), "geminibatch");
         _diagnosticsDir = Path.Combine(Path.GetFullPath(options.DiagnosticsFolder), SanitizeForPath(account.Id));
+
+        // Fires when the browser crashes or the operator closes the window: nothing on this session can recover.
+        _context.Close += OnContextClosed;
     }
 
     public string AccountId => _account.Id;
@@ -66,6 +70,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            if (_contextClosed) throw SessionLost(step, ex);
             await CaptureDiagnosticsAsync(step).ConfigureAwait(false);
             throw;
         }
@@ -105,6 +110,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            if (_contextClosed) throw SessionLost(step, ex);
             _logger.LogWarning(ex, "Generation failed at step {Step} after {Elapsed:F1}s", step, total.Elapsed.TotalSeconds);
             await CaptureDiagnosticsAsync(step).ConfigureAwait(false);
             throw;
@@ -207,6 +213,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     /// <summary>Recreate the page if a previous attempt lost it (e.g. the UI-download crash closes the tab).</summary>
     private async Task EnsurePageAsync(CancellationToken ct)
     {
+        if (_contextClosed) throw SessionLost("ensure-page", null);
         if (!_page.IsClosed) return;
         _logger.LogWarning("Page for {AccountId} is closed; opening a new one in the same context", _account.Id);
         try
@@ -215,8 +222,24 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         }
         catch (PlaywrightException ex)
         {
-            throw new GeminiSessionException("Browser is gone (crashed or closed); the session cannot recover.", ex);
+            throw SessionLost("ensure-page", ex);
         }
+    }
+
+    private void OnContextClosed(object? sender, IBrowserContext context)
+    {
+        _contextClosed = true;
+        if (!_disposed)
+            _logger.LogWarning("Browser for {AccountId} closed unexpectedly (crash or window closed)", _account.Id);
+    }
+
+    /// <summary>The browser is gone: the worker requeues the job and relaunches (or quarantines) — no point retrying here.</summary>
+    private AccountUnavailableException SessionLost(string step, Exception? inner)
+    {
+        var message = $"Browser for {_account.Id} is gone (crashed or closed) at step {step}; the session cannot recover.";
+        return inner is null
+            ? new AccountUnavailableException(AccountUnavailableReason.SessionLost, message)
+            : new AccountUnavailableException(AccountUnavailableReason.SessionLost, message, inner);
     }
 
     private async Task DismissNoticeIfPresentAsync()
@@ -431,6 +454,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     {
         if (_disposed) return;
         _disposed = true;
+        _context.Close -= OnContextClosed;
 
         try
         {

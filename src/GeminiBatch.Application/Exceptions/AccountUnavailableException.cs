@@ -10,6 +10,13 @@ public enum AccountUnavailableReason
 
     /// <summary>The Gemini generation surface never appeared (blocked page, outage, or a UI change).</summary>
     SurfaceUnavailable,
+
+    /// <summary>
+    /// The browser behind the session is gone (crashed or closed by the operator). The account itself may be
+    /// fine, so the worker relaunches the session (up to <see cref="Options.BatchOptions.MaxSessionRestarts"/>)
+    /// before quarantining it.
+    /// </summary>
+    SessionLost,
 }
 
 /// <summary>

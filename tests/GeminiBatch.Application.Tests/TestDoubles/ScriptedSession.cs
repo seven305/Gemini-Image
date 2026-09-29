@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using GeminiBatch.Application.Abstractions;
+using GeminiBatch.Application.Exceptions;
 using GeminiBatch.Application.Models;
 using GeminiBatch.Domain;
 
@@ -51,6 +52,9 @@ public sealed class ScriptedSessionFactory : IGeminiSessionFactory
             : Succeed(prompt, call, ct);
 
     public static GenerateBehaviour AlwaysFail => (_, call, _) => throw new InvalidOperationException($"always fails #{call}");
+
+    public static GenerateBehaviour AlwaysUnavailable(AccountUnavailableReason reason) =>
+        (_, call, _) => throw new AccountUnavailableException(reason, $"{reason} #{call}");
 }
 
 public sealed class ScriptedSession : IGeminiSession

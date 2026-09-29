@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using GeminiBatch.Application.Abstractions;
 using GeminiBatch.Domain;
 using GeminiBatch.Infrastructure.Processing;
@@ -10,6 +11,7 @@ public sealed class FakeGeminiSessionFactory : IGeminiSessionFactory
 {
     private readonly IOptions<FakeSessionOptions> _options;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly ConcurrentDictionary<string, int> _sessionsPerAccount = new(StringComparer.OrdinalIgnoreCase);
 
     public FakeGeminiSessionFactory(IOptions<FakeSessionOptions> options, ILoggerFactory loggerFactory)
     {
@@ -20,7 +22,8 @@ public sealed class FakeGeminiSessionFactory : IGeminiSessionFactory
     public Task<IGeminiSession> CreateAsync(GeminiAccount account, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        IGeminiSession session = new FakeGeminiSession(account, _options.Value, _loggerFactory.CreateLogger<FakeGeminiSession>());
+        var sessionNumber = _sessionsPerAccount.AddOrUpdate(account.Id, 1, (_, n) => n + 1);
+        IGeminiSession session = new FakeGeminiSession(account, _options.Value, sessionNumber, _loggerFactory.CreateLogger<FakeGeminiSession>());
         return Task.FromResult(session);
     }
 }

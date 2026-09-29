@@ -51,4 +51,11 @@ public sealed class GeminiSessionOptions
 
     /// <summary>Base folder under which each CSV-rostered account gets its own persistent profile directory.</summary>
     public string ProfilesRoot { get; set; } = "profiles";
+
+    /// <summary>
+    /// Optional IP-echo URL (e.g. https://api.ipify.org). When set, each launched browser fetches it through its
+    /// own context (and therefore its own proxy) and logs the egress IP per account. Off by default: it is an
+    /// extra request to a non-Google host, useful to verify the proxy setup, not for everyday runs.
+    /// </summary>
+    public string? ProxyCheckUrl { get; set; }
 }

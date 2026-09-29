@@ -96,7 +96,9 @@ public sealed partial class MainForm : Form
         {
             var result = await Task.Run(() => _processor.RunAsync(jobs, accounts, concurrency, progress, ct), ct);
             _lblStatus.Text = $"Done — completed {result.Completed}, skipped {result.Skipped}, failed {result.Failed} of {result.Total}";
-            ReportSkippedAccounts(accounts);
+            if (result.StopReason == BatchStopReason.AllAccountsQuarantined)
+                _lblStatus.Text += " · stopped early: all accounts quarantined";
+            ReportSkippedAccounts(result.QuarantinedAccounts);
         }
         catch (OperationCanceledException)
         {
@@ -176,13 +178,12 @@ public sealed partial class MainForm : Form
     }
 
     /// <summary>Tells the operator which accounts the batch set aside (failed sign-in, repeated failures) and why.</summary>
-    private void ReportSkippedAccounts(IReadOnlyList<GeminiAccount> accounts)
+    private void ReportSkippedAccounts(IReadOnlyList<QuarantinedAccount> skipped)
     {
-        var skipped = accounts.Where(a => a.IsQuarantined).ToList();
         if (skipped.Count == 0) return;
 
         _lblStatus.Text += $" · {skipped.Count} account(s) skipped (see details)";
-        var details = string.Join(Environment.NewLine + Environment.NewLine, skipped.Select(a => $"{a.Email}: {a.QuarantineReason}"));
+        var details = string.Join(Environment.NewLine + Environment.NewLine, skipped.Select(a => $"{a.Email}: {a.Reason}"));
         MessageBox.Show(this, details, "Skipped accounts", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 

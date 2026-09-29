@@ -1,4 +1,5 @@
 using GeminiBatch.Application.Abstractions;
+using GeminiBatch.Application.Exceptions;
 using GeminiBatch.Application.Models;
 using GeminiBatch.Domain;
 using GeminiBatch.Infrastructure.Processing;
@@ -23,11 +24,15 @@ public sealed class FakeGeminiSession : IGeminiSession
     private readonly FakeSessionOptions _options;
     private readonly ILogger<FakeGeminiSession> _logger;
     private readonly string _tempDir;
+    private readonly int _sessionNumber;
+    private int _calls;
 
-    public FakeGeminiSession(GeminiAccount account, FakeSessionOptions options, ILogger<FakeGeminiSession> logger)
+    /// <param name="sessionNumber">1 for an account's first session, 2 after a relaunch, … (only the first one "crashes").</param>
+    public FakeGeminiSession(GeminiAccount account, FakeSessionOptions options, int sessionNumber, ILogger<FakeGeminiSession> logger)
     {
         _account = account;
         _options = options;
+        _sessionNumber = sessionNumber;
         _logger = logger;
         _tempDir = Path.Combine(Path.GetTempPath(), "geminibatch");
     }
@@ -48,6 +53,16 @@ public sealed class FakeGeminiSession : IGeminiSession
         var min = Math.Max(0, _options.MinDelayMs);
         var max = Math.Max(min, _options.MaxDelayMs);
         await Task.Delay(Random.Shared.Next(min, max + 1), ct).ConfigureAwait(false);
+
+        var call = Interlocked.Increment(ref _calls);
+        if (call > _options.AccountLossAfterCalls)
+        {
+            if (_options.UnavailableAccountIds.Contains(_account.Id, StringComparer.OrdinalIgnoreCase))
+                throw new AccountUnavailableException(AccountUnavailableReason.Challenged, $"[fake] account {_account.Id} hit a verification page");
+
+            if (_sessionNumber == 1 && _options.SessionLostAccountIds.Contains(_account.Id, StringComparer.OrdinalIgnoreCase))
+                throw new AccountUnavailableException(AccountUnavailableReason.SessionLost, $"[fake] browser for {_account.Id} crashed");
+        }
 
         if (_options.AlwaysFailAccountIds.Contains(_account.Id, StringComparer.OrdinalIgnoreCase))
             throw new InvalidOperationException($"[fake] account {_account.Id} always fails");

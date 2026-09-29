@@ -59,7 +59,39 @@ public sealed class PlaywrightBrowserLauncher : IAsyncDisposable, IDisposable
         var context = await playwright.Chromium.LaunchPersistentContextAsync(userDataDir, launchOptions).ConfigureAwait(false);
         context.SetDefaultTimeout((float)TimeSpan.FromSeconds(_options.ActionTimeoutSeconds).TotalMilliseconds);
         context.SetDefaultNavigationTimeout((float)TimeSpan.FromSeconds(_options.NavigationTimeoutSeconds).TotalMilliseconds);
+
+        if (!string.IsNullOrWhiteSpace(_options.ProxyCheckUrl))
+        {
+            try
+            {
+                await LogEgressAsync(context, account, _options.ProxyCheckUrl, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Stop pressed mid-check: nobody owns the context yet, so close it here to release the profile lock.
+                try { await context.CloseAsync().ConfigureAwait(false); } catch (PlaywrightException) { }
+                throw;
+            }
+        }
+
         return context;
+    }
+
+    /// <summary>Logs the IP this account's browser egresses from (the context's request API uses the context's proxy). Never fatal.</summary>
+    private async Task LogEgressAsync(IBrowserContext context, GeminiAccount account, string url, CancellationToken ct)
+    {
+        try
+        {
+            var response = await context.APIRequest.GetAsync(url, new() { Timeout = 15_000 }).WaitAsync(ct).ConfigureAwait(false);
+            var body = (await response.TextAsync().WaitAsync(ct).ConfigureAwait(false)).Trim();
+            if (body.Length > 100) body = body[..100];
+            _logger.LogInformation("Egress check for {AccountId} via proxy {Proxy}: HTTP {Status} {Body}",
+                account.Id, account.Proxy?.Server ?? "none", response.Status, body);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            _logger.LogWarning(ex, "Egress check for {AccountId} via proxy {Proxy} failed", account.Id, account.Proxy?.Server ?? "none");
+        }
     }
 
     private string[] BuildArgs()

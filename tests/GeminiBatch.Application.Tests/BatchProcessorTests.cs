@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using GeminiBatch.Application.Abstractions;
 using GeminiBatch.Application.Exceptions;
 using GeminiBatch.Application.Models;
@@ -22,6 +23,8 @@ public sealed class BatchProcessorTests
             MaxInterPromptDelayMs = 0,
             GenerationTimeoutSeconds = 30,
             StripMetadata = true,
+            StartupStaggerMs = 0,
+            MaxSessionRestarts = 1,
         };
         configure?.Invoke(o);
         return o;
@@ -45,6 +48,9 @@ public sealed class BatchProcessorTests
 
     private static PromptJob Job(string prompt, string? fileName = null) => new() { Prompt = prompt, DesiredFileName = fileName };
 
+    private static void AssertCounts(BatchResult result, int total, int completed, int skipped, int failed) =>
+        Assert.Equal((total, completed, skipped, failed), (result.Total, result.Completed, result.Skipped, result.Failed));
+
     [Fact]
     public async Task Jobs_already_in_manifest_are_skipped_without_touching_the_session()
     {
@@ -56,7 +62,7 @@ public sealed class BatchProcessorTests
 
         var result = await Build(factory, manifest: manifest).RunAsync([done, fresh], [Account("a")], 1, progress, CancellationToken.None);
 
-        Assert.Equal(new BatchResult(2, 1, 1, 0), result);
+        AssertCounts(result, 2, 1, 1, 0);
         Assert.Equal(JobStatus.Skipped, done.Status);
         Assert.Equal(JobStatus.Completed, fresh.Status);
         Assert.True(manifest.Loaded);
@@ -75,7 +81,7 @@ public sealed class BatchProcessorTests
 
         var result = await Build(factory).RunAsync([job], [Account("a")], 1, progress, CancellationToken.None);
 
-        Assert.Equal(new BatchResult(1, 1, 0, 0), result);
+        AssertCounts(result, 1, 1, 0, 0);
         Assert.Equal(JobStatus.Completed, job.Status);
         Assert.Equal(3, job.Attempts);
         Assert.Null(job.LastError);
@@ -97,7 +103,7 @@ public sealed class BatchProcessorTests
 
         var result = await Build(factory, options).RunAsync([job], [Account("a")], 1, progress, CancellationToken.None);
 
-        Assert.Equal(new BatchResult(1, 0, 0, 1), result);
+        AssertCounts(result, 1, 0, 0, 1);
         Assert.Equal(JobStatus.Failed, job.Status);
         Assert.Equal(3, job.Attempts); // 1 initial + 2 retries
         Assert.Equal("always fails #3", job.LastError);
@@ -113,14 +119,14 @@ public sealed class BatchProcessorTests
 
         var result = await Build(factory).RunAsync([job], [Account("a")], 1, new CapturingProgress(), CancellationToken.None);
 
-        Assert.Equal(new BatchResult(1, 0, 0, 1), result);
+        AssertCounts(result, 1, 0, 0, 1);
         Assert.Equal(JobStatus.Failed, job.Status);
         Assert.Equal(1, job.Attempts);
         Assert.Equal("policy blocked", job.LastError);
     }
 
     [Fact]
-    public async Task Account_is_quarantined_after_threshold_and_batch_continues_on_the_other_account()
+    public async Task Account_is_quarantined_after_threshold_its_last_job_is_requeued_and_batch_continues()
     {
         var jobs = Enumerable.Range(1, 8).Select(i => Job($"prompt {i}")).ToList();
         var bad = Account("bad");
@@ -138,8 +144,9 @@ public sealed class BatchProcessorTests
         Assert.Contains("2 consecutive", bad.QuarantineReason);
         Assert.False(good.IsQuarantined);
 
-        Assert.Equal(2, result.Failed);
-        Assert.Equal(6, result.Completed);
+        // The first failure stays failed; the one that trips the threshold is handed to "good" instead.
+        Assert.Equal(1, result.Failed);
+        Assert.Equal(7, result.Completed);
         Assert.Equal(0, result.Skipped);
         Assert.Equal(0, result.Remaining);
         Assert.All(jobs.Where(j => j.Status == JobStatus.Failed), j => Assert.Equal("bad", j.AssignedAccountId));
@@ -160,7 +167,7 @@ public sealed class BatchProcessorTests
         Assert.Same(run, finished);
         var result = await run;
         Assert.True(account.IsQuarantined);
-        Assert.Equal(new BatchResult(10, 0, 0, 10), result);
+        AssertCounts(result, 10, 0, 0, 10);
         Assert.All(jobs, j => Assert.Equal("No healthy accounts remaining.", j.LastError));
     }
 
@@ -200,7 +207,7 @@ public sealed class BatchProcessorTests
         var result = await Build(factory, storage: storage, processor: processor, manifest: manifest)
             .RunAsync([job], [Account("a")], 1, new CapturingProgress(), CancellationToken.None);
 
-        Assert.Equal(new BatchResult(1, 1, 0, 0), result);
+        AssertCounts(result, 1, 1, 0, 0);
         Assert.Equal(["storage", "processor", "manifest"], order.Steps.ToArray());
         Assert.Equal("cat_roof", storage.BaseName);
         Assert.Equal(Path.Combine("out", "cat_roof.png"), job.SavedPath);
@@ -244,6 +251,232 @@ public sealed class BatchProcessorTests
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             Build(factory).RunAsync([Job("x")], [quarantined, Account("off", enabled: false)], 1, new CapturingProgress(), CancellationToken.None));
+    }
+
+    // --- Phase 3: quarantine, requeue, double-save guards, cancellation, pacing ---
+
+    [Fact]
+    public async Task AccountUnavailable_is_not_retried_quarantines_at_once_and_the_job_moves_to_a_healthy_account()
+    {
+        var jobs = Enumerable.Range(1, 4).Select(i => Job($"prompt {i}")).ToList();
+        var bad = Account("bad");
+        var good = Account("good");
+        var factory = new ScriptedSessionFactory()
+            .OnGenerate("bad", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.Challenged))
+            .OnReady("good", ct => Task.Delay(100, ct)); // "bad" is ready first, so it certainly pulls a job
+
+        var result = await Build(factory).RunAsync(jobs, [bad, good], 2, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 4, 4, 0, 0);
+        Assert.Equal(BatchStopReason.Finished, result.StopReason);
+        Assert.True(bad.IsQuarantined);
+        Assert.Contains("Challenged", bad.QuarantineReason);
+        Assert.Equal(1, factory.Sessions.Single(s => s.AccountId == "bad").Calls); // terminal: no retries
+        Assert.All(jobs, j => Assert.Equal("good", j.AssignedAccountId));
+        var quarantined = Assert.Single(result.QuarantinedAccounts);
+        Assert.Equal("bad", quarantined.Id);
+    }
+
+    [Fact]
+    public async Task When_every_account_is_quarantined_the_batch_stops_gracefully_with_a_reason()
+    {
+        var jobs = Enumerable.Range(1, 5).Select(i => Job($"prompt {i}")).ToList();
+        var factory = new ScriptedSessionFactory()
+            .OnGenerate("a", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.Challenged))
+            .OnGenerate("b", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.SignedOut));
+
+        var run = Build(factory).RunAsync(jobs, [Account("a"), Account("b")], 2, new CapturingProgress(), CancellationToken.None);
+        Assert.Same(run, await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(5))));
+        var result = await run;
+
+        AssertCounts(result, 5, 0, 0, 5);
+        Assert.Equal(BatchStopReason.AllAccountsQuarantined, result.StopReason);
+        Assert.Equal(["a", "b"], result.QuarantinedAccounts.Select(q => q.Id).Order().ToArray());
+        Assert.All(jobs, j => Assert.Equal("No healthy accounts remaining.", j.LastError));
+        Assert.All(factory.Sessions, s => Assert.True(s.Disposed));
+    }
+
+    [Fact]
+    public async Task Lost_browser_session_is_relaunched_once_and_the_job_completes()
+    {
+        var job = Job("survives a crash");
+        var calls = 0;
+        var factory = new ScriptedSessionFactory().OnGenerate("a", (p, c, ct) =>
+            Interlocked.Increment(ref calls) == 1
+                ? throw new AccountUnavailableException(AccountUnavailableReason.SessionLost, "browser crashed")
+                : ScriptedSessionFactory.Succeed(p, c, ct));
+        var account = Account("a");
+
+        var result = await Build(factory).RunAsync([job], [account], 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 1, 1, 0, 0);
+        Assert.False(account.IsQuarantined);
+        Assert.Equal(2, factory.Sessions.Count);
+        Assert.All(factory.Sessions, s => Assert.True(s.Disposed));
+        Assert.Equal(2, job.Attempts);
+    }
+
+    [Fact]
+    public async Task Session_lost_beyond_the_restart_budget_quarantines_the_account()
+    {
+        var job = Job("keeps crashing");
+        var factory = new ScriptedSessionFactory()
+            .OnGenerate("a", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.SessionLost));
+        var account = Account("a");
+
+        var result = await Build(factory).RunAsync([job], [account], 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 1, 0, 0, 1);
+        Assert.True(account.IsQuarantined);
+        Assert.Contains("lost 2 time(s)", account.QuarantineReason);
+        Assert.Equal(2, factory.Sessions.Count); // first launch + MaxSessionRestarts(1)
+        Assert.Equal(BatchStopReason.AllAccountsQuarantined, result.StopReason);
+    }
+
+    [Fact]
+    public async Task PermanentJobException_does_not_count_toward_quarantine()
+    {
+        var jobs = Enumerable.Range(1, 4).Select(i => Job($"prompt {i}")).ToList();
+        var factory = new ScriptedSessionFactory().OnGenerate("a", (p, c, ct) =>
+            c <= 3 ? throw new PermanentJobException("refused") : ScriptedSessionFactory.Succeed(p, c, ct));
+        var account = Account("a");
+        var options = FastOptions(o => { o.MaxRetriesPerJob = 0; o.AccountFailureThreshold = 2; });
+
+        var result = await Build(factory, options).RunAsync(jobs, [account], 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 4, 1, 0, 3);
+        Assert.False(account.IsQuarantined);
+    }
+
+    [Fact]
+    public async Task Duplicate_manifest_keys_in_one_batch_are_generated_and_saved_once()
+    {
+        var jobs = new[] { Job("same"), Job("same"), Job("first", fileName: "name"), Job("second", fileName: "name") };
+        var manifest = new InMemoryManifest();
+        var factory = new ScriptedSessionFactory();
+
+        var result = await Build(factory, manifest: manifest)
+            .RunAsync(jobs, [Account("a"), Account("b")], 2, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 4, 2, 2, 0);
+        Assert.Equal(JobStatus.Skipped, jobs[1].Status);
+        Assert.Equal(JobStatus.Skipped, jobs[3].Status);
+        Assert.All(manifest.MarkCounts.Values, n => Assert.Equal(1, n));
+        Assert.Equal(2, factory.Sessions.Sum(s => s.Calls));
+    }
+
+    [Fact]
+    public async Task Key_completed_elsewhere_while_generating_is_not_saved_again()
+    {
+        var job = Job("raced");
+        var manifest = new InMemoryManifest();
+        var storage = new RecordingStorage();
+        string? temp = null;
+        var factory = new ScriptedSessionFactory().OnGenerate("a", async (p, c, ct) =>
+        {
+            manifest.CompleteExternally(job.ManifestKey);
+            var image = await ScriptedSessionFactory.Succeed(p, c, ct);
+            temp = image.TempFilePath;
+            return image;
+        });
+
+        var result = await Build(factory, storage: storage, manifest: manifest)
+            .RunAsync([job], [Account("a")], 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 1, 0, 1, 0);
+        Assert.Equal(JobStatus.Skipped, job.Status);
+        Assert.Empty(storage.Calls);
+        Assert.Empty(manifest.MarkCounts);
+        Assert.False(File.Exists(temp), "temp file should be cleaned up");
+    }
+
+    [Fact]
+    public async Task Cancel_during_generation_saves_nothing_and_leaves_the_job_pending()
+    {
+        var job = Job("interrupted");
+        var manifest = new InMemoryManifest();
+        var storage = new RecordingStorage();
+        using var cts = new CancellationTokenSource();
+        var factory = new ScriptedSessionFactory().OnGenerate("a", async (_, _, ct) =>
+        {
+            cts.Cancel();
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new InvalidOperationException("unreachable");
+        });
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Build(factory, storage: storage, manifest: manifest).RunAsync([job], [Account("a")], 1, new CapturingProgress(), cts.Token));
+
+        Assert.Equal(JobStatus.Pending, job.Status);
+        Assert.Empty(storage.Calls);
+        Assert.Empty(manifest.Entries);
+    }
+
+    [Fact]
+    public async Task Cancel_after_the_file_is_saved_still_commits_the_manifest_entry()
+    {
+        var job = Job("almost done");
+        var manifest = new InMemoryManifest();
+        using var cts = new CancellationTokenSource();
+        var processor = new CancellingProcessor(cts);
+
+        try
+        {
+            await Build(new ScriptedSessionFactory(), processor: processor, manifest: manifest)
+                .RunAsync([job, Job("next")], [Account("a")], 1, new CapturingProgress(), cts.Token);
+        }
+        catch (OperationCanceledException) { }
+
+        Assert.False(processor.TokenWasCancellable, "commit must not be cancellable once the file is saved");
+        Assert.Equal(JobStatus.Completed, job.Status);
+        Assert.Equal(1, manifest.MarkCounts[job.ManifestKey]);
+    }
+
+    [Fact]
+    public async Task Accounts_sharing_an_email_or_profile_directory_get_one_worker()
+    {
+        var accounts = new[]
+        {
+            Account("a"),
+            new GeminiAccount { Id = "a-2", Email = "A@example.com", UserDataDir = "a-2" }, // same Google account
+            new GeminiAccount { Id = "c", Email = "c@example.com", UserDataDir = "a" },    // same profile dir
+        };
+        var factory = new ScriptedSessionFactory();
+
+        var result = await Build(factory).RunAsync([Job("x"), Job("y")], accounts, 3, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 2, 2, 0, 0);
+        Assert.Equal("a", Assert.Single(factory.Sessions).AccountId);
+    }
+
+    [Fact]
+    public async Task Workers_start_staggered()
+    {
+        var readyAt = new ConcurrentDictionary<string, DateTime>();
+        var factory = new ScriptedSessionFactory();
+        foreach (var id in new[] { "a", "b", "c" })
+            factory.OnReady(id, _ => { readyAt[id] = DateTime.UtcNow; return Task.CompletedTask; });
+        var options = FastOptions(o => o.StartupStaggerMs = 150);
+
+        await Build(factory, options).RunAsync(
+            Enumerable.Range(1, 3).Select(i => Job($"p{i}")).ToList(),
+            [Account("a"), Account("b"), Account("c")], 3, new CapturingProgress(), CancellationToken.None);
+
+        var times = readyAt.Values.Order().ToArray();
+        Assert.Equal(3, times.Length);
+        Assert.True(times[2] - times[0] >= TimeSpan.FromMilliseconds(280), $"spread was {(times[2] - times[0]).TotalMilliseconds} ms");
+    }
+
+    private sealed class CancellingProcessor(CancellationTokenSource cts) : IImageProcessor
+    {
+        public bool TokenWasCancellable { get; private set; }
+
+        public Task StripMetadataAsync(string filePath, CancellationToken ct)
+        {
+            TokenWasCancellable = ct.CanBeCanceled;
+            cts.Cancel(); // Stop pressed right after the file landed on disk
+            return Task.CompletedTask;
+        }
     }
 
     // --- ordered doubles for the success-path test ---
