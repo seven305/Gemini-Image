@@ -78,7 +78,13 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   picked prompt, repeats allowed; `PromptJob.Occurrence` makes repeated prompts' keys unique (`key#2`…). The seed is
   derived from prompts + account emails, so re-planning the same batch resumes exactly. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
   `Fake:UnavailableAccountIds` / `SessionLostAccountIds` / `AccountLossAfterCalls` reproduce the failure paths offline.
-- Next: Phase 4 UI polish, Phase 5 deploy. Bonus: CSV, naming, EXIF.
+- Phase 4 (operator UI): code complete. Prompts come from the text box or **Load prompts CSV…** (`Filename | Prompt`
+  or comma; delimiter picked from the header line, filenames -> `DesiredFileName`); the grid previews the planned jobs
+  before Start. Concurrency is capped at the enabled-account count. Live grid (`BufferedDataGridView`, double-buffered,
+  per-row update, colored Status cell, Error column), StatusStrip counts + progress bar, "Resume detected" note
+  (manifest skips = `Skipped` with no error), **Open output folder**, and a non-modal last-run summary box
+  (quarantined accounts + reasons). No modal after Start; validation messages only on the Start click.
+- Next: Phase 5 deploy (EXIF strip processor, packaging).
 
 ## Build / run
 `dotnet build` (all projects green), `dotnet test` (Application + Infrastructure suites).
@@ -88,7 +94,7 @@ on the dev box (see SPIKE_FINDINGS.md), so `playwright install chromium` is only
 Run GeminiBatch.WinForms: paste prompts and **Start**. Start asks for the account CSV the first time
 (`email,password,recovery email,2FA key,proxy`; only the email is required; proxy is a URL such as
 `http://user:pass@host:port` or `socks5://host:port`; header optional; `*.csv` is git-ignored) and re-reads it
-on every run; **Load CSV…** switches files. The CSV is the only account source. Each worker signs its account
+on every run; **Accounts CSV…** switches files. The CSV is the only account source. Each worker signs its account
 in automatically if the profile is signed out — one sign-in at a time app-wide (`GoogleSignInGate`). An
 account whose sign-in fails (CAPTCHA, unknown challenge, wrong password, no password) is skipped, the batch
 continues, and skipped accounts + reasons are listed at the end.

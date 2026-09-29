@@ -26,6 +26,7 @@ public sealed class TextPromptSource : IPromptSource
             PrepareHeaderForMatch = args => args.Header.Trim().ToLowerInvariant(),
             MissingFieldFound = null,
             TrimOptions = TrimOptions.Trim,
+            Delimiter = DetectDelimiter(path),
         };
 
         using var reader = new StreamReader(path);
@@ -51,5 +52,20 @@ public sealed class TextPromptSource : IPromptSource
         }
 
         return jobs;
+    }
+
+    /// <summary>
+    /// Picks the delimiter from the header line: "Filename | Prompt" and tab/semicolon files are accepted as well as
+    /// commas. Only the header is inspected because prompts themselves routinely contain commas.
+    /// </summary>
+    private static string DetectDelimiter(string path)
+    {
+        var header = File.ReadLines(path).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? string.Empty;
+        foreach (var candidate in new[] { "|", "	", ";" })
+        {
+            if (header.Contains(candidate, StringComparison.Ordinal))
+                return candidate;
+        }
+        return ",";
     }
 }
