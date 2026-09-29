@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using GeminiBatch.Application.Abstractions;
 using GeminiBatch.Application.Exceptions;
@@ -12,8 +14,10 @@ using Polly.Retry;
 namespace GeminiBatch.Application;
 
 /// <summary>
-/// Fans a list of prompt jobs out over N workers, one per eligible account. Each worker owns a single
-/// <see cref="IGeminiSession"/> at a time. Per-job retries use exponential backoff with jitter for transient
+/// Fans a list of prompt jobs out over N workers (N = concurrency). Each worker takes the next unused account from
+/// the roster (in roster order), generates up to <see cref="BatchOptions.MaxImagesPerAccount"/> images with it, closes
+/// that browser and takes the next account, until the queue drains or every account has had its turn. A worker owns
+/// a single <see cref="IGeminiSession"/> at a time. Per-job retries use exponential backoff with jitter for transient
 /// failures; an <see cref="AccountUnavailableException"/> (auth wall, CAPTCHA, dead browser) is terminal for the
 /// account, not the job: the job goes back on the queue for a healthy worker. An account is also quarantined after
 /// <see cref="BatchOptions.AccountFailureThreshold"/> consecutive job failures. The batch carries on with whatever
@@ -21,7 +25,7 @@ namespace GeminiBatch.Application;
 /// </summary>
 public sealed class BatchProcessor
 {
-    private const string NoHealthyAccounts = "No healthy accounts remaining.";
+    private const string NoAccountsLeft = "No accounts left to run this job (all used or quarantined).";
 
     private static readonly ResiliencePropertyKey<PromptJob> JobKey = new("GeminiBatch.Job");
     private static readonly ResiliencePropertyKey<IProgress<JobUpdate>> ProgressKey = new("GeminiBatch.Progress");
@@ -68,8 +72,8 @@ public sealed class BatchProcessor
         if (eligible.Count == 0)
             throw new InvalidOperationException("No enabled, non-quarantined accounts are available.");
 
-        var workerAccounts = eligible.Take(Math.Clamp(concurrency, 1, eligible.Count)).ToList();
-        var run = new RunState();
+        var workerCount = Math.Clamp(concurrency, 1, eligible.Count);
+        var run = new RunState(eligible);
 
         // The whole batch is queued up front (it is small); workers put jobs back when their account dies.
         var keysInBatch = new HashSet<string>(StringComparer.Ordinal);
@@ -96,15 +100,15 @@ public sealed class BatchProcessor
         }
         run.CompleteIfNothingOutstanding();
 
-        _logger.LogInformation("Starting batch: {JobCount} jobs ({Queued} queued) across {WorkerCount} workers",
-            jobs.Count, run.Outstanding, workerAccounts.Count);
+        _logger.LogInformation("Starting batch: {JobCount} jobs ({Queued} queued), {WorkerCount} workers drawing from {AccountCount} accounts, {MaxImages} image(s) per account",
+            jobs.Count, run.Outstanding, workerCount, eligible.Count, _options.MaxImagesPerAccount > 0 ? _options.MaxImagesPerAccount : "unlimited");
 
-        run.ActiveWorkers = workerAccounts.Count;
-        var workers = workerAccounts.Select((account, index) => Task.Run(async () =>
+        run.ActiveWorkers = workerCount;
+        var workers = Enumerable.Range(0, workerCount).Select(index => Task.Run(async () =>
         {
             try
             {
-                await WorkerAsync(account, index, run, progress, ct).ConfigureAwait(false);
+                await WorkerAsync(index, run, progress, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -120,21 +124,23 @@ public sealed class BatchProcessor
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            LogSummary("cancelled", BuildResult(jobs, run, workerAccounts));
+            LogSummary("cancelled", BuildResult(jobs, run, leftovers: 0));
             throw;
         }
 
-        // Anything still queued was never picked up because every worker died. Report it as a failure rather
-        // than leaving it silently unprocessed.
+        // Anything still queued was never picked up because the accounts ran out (used or quarantined). Report it as
+        // a failure rather than leaving it silently unprocessed.
+        var leftovers = 0;
         while (run.Reader.TryRead(out var leftover))
         {
             leftover.AssignedAccountId = null;
-            leftover.LastError = NoHealthyAccounts;
+            leftover.LastError = NoAccountsLeft;
             SetStatus(leftover, JobStatus.Failed, progress);
             run.CountFailed();
+            leftovers++;
         }
 
-        var result = BuildResult(jobs, run, workerAccounts);
+        var result = BuildResult(jobs, run, leftovers);
         LogSummary("finished", result);
         return result;
     }
@@ -161,11 +167,27 @@ public sealed class BatchProcessor
         return eligible;
     }
 
-    private async Task WorkerAsync(GeminiAccount account, int index, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)
+    private async Task WorkerAsync(int index, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)
+    {
+        await StartupStaggerAsync(index, ct).ConfigureAwait(false);
+
+        // Wait for work before taking an account, so no browser is launched once the queue has drained.
+        while (await run.Reader.WaitToReadAsync(ct).ConfigureAwait(false))
+        {
+            if (!run.TryTakeAccount(out var account))
+            {
+                _logger.LogInformation("Worker {Worker} stopping: every account has had its turn", index);
+                return;
+            }
+            await UseAccountAsync(account, run, progress, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>One account's turn: launch its browser (relaunching after a crash) and run jobs until its turn ends.</summary>
+    private async Task UseAccountAsync(GeminiAccount account, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)
     {
         using var accountScope = _logger.BeginScope(new Dictionary<string, object?> { ["AccountId"] = account.Id });
-
-        await StartupStaggerAsync(index, ct).ConfigureAwait(false);
+        _logger.LogInformation("Account {AccountId} starting its turn", account.Id);
 
         for (var restarts = 0; ; restarts++)
         {
@@ -183,7 +205,10 @@ public sealed class BatchProcessor
         }
     }
 
-    /// <summary>One session's lifetime: launch, get ready, then pull jobs until the queue drains or the account/session dies.</summary>
+    /// <summary>
+    /// One session's lifetime: launch, get ready, then pull jobs until the account's image cap is reached, the queue
+    /// drains, or the account/session dies.
+    /// </summary>
     private async Task<SessionExit> RunSessionAsync(GeminiAccount account, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)
     {
         IGeminiSession session;
@@ -225,6 +250,7 @@ public sealed class BatchProcessor
             }
 
             var consecutiveFailures = 0;
+            var imagesDone = 0;
 
             await foreach (var job in run.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
@@ -237,6 +263,12 @@ public sealed class BatchProcessor
                     case JobOutcome.Completed:
                         consecutiveFailures = 0;
                         run.Finish(JobStatus.Completed);
+                        if (_options.MaxImagesPerAccount > 0 && ++imagesDone >= _options.MaxImagesPerAccount)
+                        {
+                            // The next prompt runs in another account's browser, so no pacing delay here.
+                            _logger.LogInformation("Account {AccountId} generated {Images} image(s); its turn is over", account.Id, imagesDone);
+                            return SessionExit.AccountDone;
+                        }
                         break;
 
                     case JobOutcome.Skipped:
@@ -484,16 +516,22 @@ public sealed class BatchProcessor
     private IDisposable? BeginJobScope(PromptJob job) =>
         _logger.BeginScope(new Dictionary<string, object?> { ["JobId"] = job.Id });
 
-    private static BatchResult BuildResult(IReadOnlyList<PromptJob> jobs, RunState run, IReadOnlyList<GeminiAccount> workerAccounts)
+    private static BatchResult BuildResult(IReadOnlyList<PromptJob> jobs, RunState run, int leftovers)
     {
-        var quarantined = workerAccounts
+        var used = run.UsedAccounts;
+        var quarantined = used
             .Where(a => a.IsQuarantined)
             .Select(a => new QuarantinedAccount(a.Id, a.Email, a.QuarantineReason ?? "unknown"))
             .ToList();
 
+        var stopReason = leftovers == 0 ? BatchStopReason.Finished
+            : quarantined.Count == used.Count ? BatchStopReason.AllAccountsQuarantined
+            : BatchStopReason.AccountsExhausted;
+
         return new BatchResult(jobs.Count, run.Completed, run.Skipped, run.Failed)
         {
-            StopReason = quarantined.Count == workerAccounts.Count ? BatchStopReason.AllAccountsQuarantined : BatchStopReason.Finished,
+            StopReason = stopReason,
+            AccountsUsed = used.Count,
             QuarantinedAccounts = quarantined,
         };
     }
@@ -501,8 +539,8 @@ public sealed class BatchProcessor
     private void LogSummary(string how, BatchResult result)
     {
         _logger.LogInformation(
-            "Batch {How} ({StopReason}): total={Total} completed={Completed} skipped={Skipped} failed={Failed} remaining={Remaining} quarantinedAccounts={Quarantined}",
-            how, result.StopReason, result.Total, result.Completed, result.Skipped, result.Failed, result.Remaining, result.QuarantinedAccounts.Count);
+            "Batch {How} ({StopReason}): total={Total} completed={Completed} skipped={Skipped} failed={Failed} remaining={Remaining} accountsUsed={AccountsUsed} quarantinedAccounts={Quarantined}",
+            how, result.StopReason, result.Total, result.Completed, result.Skipped, result.Failed, result.Remaining, result.AccountsUsed, result.QuarantinedAccounts.Count);
 
         foreach (var account in result.QuarantinedAccounts)
             _logger.LogWarning("Quarantined account {AccountId}: {Reason}", account.Id, account.Reason);
@@ -526,15 +564,18 @@ public sealed class BatchProcessor
 
     private enum JobOutcome { Completed, Skipped, Failed, FailedPermanent, AccountLost }
 
-    private enum SessionExit { QueueDrained, Quarantined, SessionLost }
+    private enum SessionExit { QueueDrained, AccountDone, Quarantined, SessionLost }
 
     /// <summary>
-    /// The shared job queue plus counters. A job is "outstanding" from enqueue until it reaches a terminal state;
-    /// requeueing keeps it outstanding. The queue completes when nothing is outstanding (or no worker is left).
+    /// The shared job queue, the pool of accounts that haven't had their turn yet, plus counters. A job is
+    /// "outstanding" from enqueue until it reaches a terminal state; requeueing keeps it outstanding. The queue
+    /// completes when nothing is outstanding (or no worker is left).
     /// </summary>
-    private sealed class RunState
+    private sealed class RunState(IEnumerable<GeminiAccount> accounts)
     {
         private readonly Channel<PromptJob> _channel = Channel.CreateUnbounded<PromptJob>();
+        private readonly ConcurrentQueue<GeminiAccount> _unusedAccounts = new(accounts);
+        private readonly ConcurrentQueue<GeminiAccount> _usedAccounts = new();
         private int _completed, _skipped, _failed, _outstanding;
 
         public int ActiveWorkers;
@@ -546,6 +587,15 @@ public sealed class BatchProcessor
         public int Skipped => Volatile.Read(ref _skipped);
         public int Failed => Volatile.Read(ref _failed);
         public int Outstanding => Volatile.Read(ref _outstanding);
+        public IReadOnlyList<GeminiAccount> UsedAccounts => [.. _usedAccounts];
+
+        /// <summary>The next account in roster order that hasn't had its turn; false once the roster is used up.</summary>
+        public bool TryTakeAccount([NotNullWhen(true)] out GeminiAccount? account)
+        {
+            if (!_unusedAccounts.TryDequeue(out account)) return false;
+            _usedAccounts.Enqueue(account);
+            return true;
+        }
 
         public void Enqueue(PromptJob job)
         {

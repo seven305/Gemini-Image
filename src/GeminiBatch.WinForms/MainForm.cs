@@ -98,6 +98,8 @@ public sealed partial class MainForm : Form
             _lblStatus.Text = $"Done — completed {result.Completed}, skipped {result.Skipped}, failed {result.Failed} of {result.Total}";
             if (result.StopReason == BatchStopReason.AllAccountsQuarantined)
                 _lblStatus.Text += " · stopped early: all accounts quarantined";
+            else if (result.StopReason == BatchStopReason.AccountsExhausted)
+                _lblStatus.Text += " · stopped early: all accounts used";
             ReportSkippedAccounts(result.QuarantinedAccounts);
         }
         catch (OperationCanceledException)

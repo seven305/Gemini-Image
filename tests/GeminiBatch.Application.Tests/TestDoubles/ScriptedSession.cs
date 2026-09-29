@@ -14,7 +14,15 @@ public sealed class ScriptedSessionFactory : IGeminiSessionFactory
     private readonly ConcurrentDictionary<string, GenerateBehaviour> _behaviours = new();
     private readonly ConcurrentDictionary<string, Func<CancellationToken, Task>> _readyBehaviours = new();
 
+    private int _active, _maxActive;
+
     public ConcurrentBag<ScriptedSession> Sessions { get; } = new();
+
+    /// <summary>Account ids in the order their sessions were created.</summary>
+    public ConcurrentQueue<string> LaunchOrder { get; } = new();
+
+    /// <summary>Most sessions (browsers) that were open at the same time.</summary>
+    public int MaxActiveSessions => Volatile.Read(ref _maxActive);
 
     public ScriptedSessionFactory OnGenerate(string accountId, GenerateBehaviour behaviour)
     {
@@ -32,7 +40,11 @@ public sealed class ScriptedSessionFactory : IGeminiSessionFactory
     {
         var generate = _behaviours.GetValueOrDefault(account.Id) ?? Succeed;
         var ready = _readyBehaviours.GetValueOrDefault(account.Id) ?? (_ => Task.CompletedTask);
-        var session = new ScriptedSession(account.Id, generate, ready);
+        var session = new ScriptedSession(account.Id, generate, ready, () => Interlocked.Decrement(ref _active));
+        var active = Interlocked.Increment(ref _active);
+        int max;
+        while (active > (max = Volatile.Read(ref _maxActive)) && Interlocked.CompareExchange(ref _maxActive, active, max) != max) { }
+        LaunchOrder.Enqueue(account.Id);
         Sessions.Add(session);
         return Task.FromResult<IGeminiSession>(session);
     }
@@ -61,13 +73,15 @@ public sealed class ScriptedSession : IGeminiSession
 {
     private readonly GenerateBehaviour _generate;
     private readonly Func<CancellationToken, Task> _ready;
+    private readonly Action _onDispose;
     private int _calls;
 
-    public ScriptedSession(string accountId, GenerateBehaviour generate, Func<CancellationToken, Task> ready)
+    public ScriptedSession(string accountId, GenerateBehaviour generate, Func<CancellationToken, Task> ready, Action onDispose)
     {
         AccountId = accountId;
         _generate = generate;
         _ready = ready;
+        _onDispose = onDispose;
     }
 
     public string AccountId { get; }
@@ -86,6 +100,7 @@ public sealed class ScriptedSession : IGeminiSession
 
     public ValueTask DisposeAsync()
     {
+        if (!Disposed) _onDispose();
         Disposed = true;
         return ValueTask.CompletedTask;
     }

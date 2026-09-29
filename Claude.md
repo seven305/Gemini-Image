@@ -28,7 +28,8 @@ UserDataDir, Proxy?, Enabled, quarantine state), `ProxySettings(Server,User?,Pas
 Application ports: `IGeminiSession`(+`IGeminiSessionFactory`), `IImageStorage`,
 `IImageProcessor`, `ICsvAccountRoster`, `IPromptSource`, `IJobManifest`. Models: `JobUpdate`,
 `BatchResult`, `BatchOptions`. `BatchProcessor.RunAsync(jobs, accounts, concurrency,
-IProgress<JobUpdate>, ct)` — Channels worker pool (one account per worker), Polly retry,
+IProgress<JobUpdate>, ct)` — Channels worker pool (concurrency = workers; each worker takes the next unused
+CSV account, generates `MaxImagesPerAccount` images (default 1), closes that browser, takes the next), Polly retry,
 account quarantine after threshold, manifest resume, inter-prompt jitter.
 
 ## Conventions (enforce)
@@ -69,8 +70,10 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   `AccountFailureThreshold` is requeued too; `SessionLost` (browser crashed/closed) relaunches the session up to
   `MaxSessionRestarts` before quarantining; duplicate `ManifestKey`s in a batch are skipped; the manifest is
   re-checked at pickup and before save; the commit (strip + manifest) is non-cancellable once the file is saved;
-  `StartupStaggerMs` staggers launches; accounts sharing an email/profile dir get one worker. `BatchResult` carries
-  `StopReason` + `QuarantinedAccounts`. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
+  `StartupStaggerMs` staggers launches; accounts sharing an email/profile dir are used once. Account rotation:
+  workers draw accounts from the roster in CSV order, one turn per account per run (`MaxImagesPerAccount`, 0 = no
+  cap); jobs left when every account has had its turn fail with `StopReason.AccountsExhausted`. `BatchResult` carries
+  `StopReason`, `AccountsUsed` + `QuarantinedAccounts`. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
   `Fake:UnavailableAccountIds` / `SessionLostAccountIds` / `AccountLossAfterCalls` reproduce the failure paths offline.
 - Next: Phase 4 UI polish, Phase 5 deploy. Bonus: CSV, naming, EXIF.
 

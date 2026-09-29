@@ -25,6 +25,7 @@ public sealed class BatchProcessorTests
             StripMetadata = true,
             StartupStaggerMs = 0,
             MaxSessionRestarts = 1,
+            MaxImagesPerAccount = 0, // no rotation: these tests exercise one account per worker; rotation has its own tests
         };
         configure?.Invoke(o);
         return o;
@@ -42,6 +43,13 @@ public sealed class BatchProcessorTests
             manifest ?? new InMemoryManifest(),
             Microsoft.Extensions.Options.Options.Create(options ?? FastOptions()),
             NullLogger<BatchProcessor>.Instance);
+
+    private const string NoAccountsLeft = "No accounts left to run this job (all used or quarantined).";
+
+    private static BatchOptions RotatingOptions(int imagesPerAccount = 1) => FastOptions(o => o.MaxImagesPerAccount = imagesPerAccount);
+
+    private static GeminiAccount[] Accounts(int count) =>
+        Enumerable.Range(0, count).Select(i => Account(((char)('a' + i)).ToString())).ToArray();
 
     private static GeminiAccount Account(string id, bool enabled = true) =>
         new() { Id = id, Email = $"{id}@example.com", UserDataDir = id, Enabled = enabled };
@@ -168,7 +176,7 @@ public sealed class BatchProcessorTests
         var result = await run;
         Assert.True(account.IsQuarantined);
         AssertCounts(result, 10, 0, 0, 10);
-        Assert.All(jobs, j => Assert.Equal("No healthy accounts remaining.", j.LastError));
+        Assert.All(jobs, j => Assert.Equal(NoAccountsLeft, j.LastError));
     }
 
     [Fact]
@@ -292,7 +300,7 @@ public sealed class BatchProcessorTests
         AssertCounts(result, 5, 0, 0, 5);
         Assert.Equal(BatchStopReason.AllAccountsQuarantined, result.StopReason);
         Assert.Equal(["a", "b"], result.QuarantinedAccounts.Select(q => q.Id).Order().ToArray());
-        Assert.All(jobs, j => Assert.Equal("No healthy accounts remaining.", j.LastError));
+        Assert.All(jobs, j => Assert.Equal(NoAccountsLeft, j.LastError));
         Assert.All(factory.Sessions, s => Assert.True(s.Disposed));
     }
 
@@ -455,7 +463,11 @@ public sealed class BatchProcessorTests
         var readyAt = new ConcurrentDictionary<string, DateTime>();
         var factory = new ScriptedSessionFactory();
         foreach (var id in new[] { "a", "b", "c" })
+        {
             factory.OnReady(id, _ => { readyAt[id] = DateTime.UtcNow; return Task.CompletedTask; });
+            // Slow jobs, so work is still queued when the staggered workers start (idle workers never launch a browser).
+            factory.OnGenerate(id, async (p, c, ct) => { await Task.Delay(500, ct); return await ScriptedSessionFactory.Succeed(p, c, ct); });
+        }
         var options = FastOptions(o => o.StartupStaggerMs = 150);
 
         await Build(factory, options).RunAsync(
@@ -465,6 +477,100 @@ public sealed class BatchProcessorTests
         var times = readyAt.Values.Order().ToArray();
         Assert.Equal(3, times.Length);
         Assert.True(times[2] - times[0] >= TimeSpan.FromMilliseconds(280), $"spread was {(times[2] - times[0]).TotalMilliseconds} ms");
+    }
+
+    // --- Account rotation: workers draw the next unused account from the roster after each account's turn ---
+
+    [Fact]
+    public async Task Concurrency_1_uses_one_account_per_image_in_roster_order_one_browser_at_a_time()
+    {
+        var jobs = Enumerable.Range(1, 3).Select(i => Job($"p{i}")).ToList();
+        var factory = new ScriptedSessionFactory();
+
+        var result = await Build(factory, RotatingOptions()).RunAsync(jobs, Accounts(5), 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 3, 3, 0, 0);
+        Assert.Equal(BatchStopReason.Finished, result.StopReason);
+        Assert.Equal(3, result.AccountsUsed);
+        Assert.Equal(["a", "b", "c"], factory.LaunchOrder.ToArray()); // d and e never launched
+        Assert.Equal(1, factory.MaxActiveSessions);
+        Assert.All(factory.Sessions, s => { Assert.Equal(1, s.Calls); Assert.True(s.Disposed); });
+        Assert.Equal(["a", "b", "c"], jobs.Select(j => j.AssignedAccountId!).ToArray());
+    }
+
+    [Fact]
+    public async Task When_every_account_has_had_its_turn_leftover_jobs_fail_with_AccountsExhausted()
+    {
+        var jobs = Enumerable.Range(1, 5).Select(i => Job($"p{i}")).ToList();
+        var accounts = Accounts(3);
+
+        var result = await Build(new ScriptedSessionFactory(), RotatingOptions()).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 5, 3, 0, 2);
+        Assert.Equal(BatchStopReason.AccountsExhausted, result.StopReason);
+        Assert.Equal(3, result.AccountsUsed);
+        Assert.Empty(result.QuarantinedAccounts);
+        Assert.DoesNotContain(accounts, a => a.IsQuarantined); // used up is not the same as quarantined
+        Assert.Equal(2, jobs.Count(j => j.LastError == NoAccountsLeft));
+    }
+
+    [Fact]
+    public async Task Quarantined_account_hands_its_job_to_the_next_account_in_the_roster()
+    {
+        var jobs = new[] { Job("p1"), Job("p2") };
+        var accounts = Accounts(4);
+        var factory = new ScriptedSessionFactory()
+            .OnGenerate("a", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.Challenged));
+
+        var result = await Build(factory, RotatingOptions()).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 2, 2, 0, 0);
+        Assert.True(accounts[0].IsQuarantined);
+        Assert.Equal(["a", "b", "c"], factory.LaunchOrder.ToArray());
+        Assert.Equal(["b", "c"], jobs.Select(j => j.AssignedAccountId!).Order().ToArray());
+        Assert.Equal("a", Assert.Single(result.QuarantinedAccounts).Id);
+    }
+
+    [Fact]
+    public async Task Concurrency_2_rotates_accounts_with_at_most_two_browsers_open()
+    {
+        var jobs = Enumerable.Range(1, 4).Select(i => Job($"p{i}")).ToList();
+        var factory = new ScriptedSessionFactory();
+        foreach (var id in new[] { "a", "b", "c", "d" })
+            factory.OnGenerate(id, async (p, c, ct) => { await Task.Delay(20, ct); return await ScriptedSessionFactory.Succeed(p, c, ct); });
+
+        var result = await Build(factory, RotatingOptions()).RunAsync(jobs, Accounts(6), 2, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 4, 4, 0, 0);
+        Assert.Equal(4, result.AccountsUsed);
+        Assert.Equal(4, factory.Sessions.Count);
+        Assert.Equal(2, factory.MaxActiveSessions);
+    }
+
+    [Fact]
+    public async Task Image_cap_above_one_lets_an_account_generate_that_many_before_rotating()
+    {
+        var jobs = Enumerable.Range(1, 5).Select(i => Job($"p{i}")).ToList();
+        var factory = new ScriptedSessionFactory();
+
+        var result = await Build(factory, RotatingOptions(imagesPerAccount: 2)).RunAsync(jobs, Accounts(5), 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 5, 5, 0, 0);
+        Assert.Equal(["a", "b", "c"], factory.LaunchOrder.ToArray());
+        Assert.Equal([2, 2, 1], factory.Sessions.OrderBy(s => s.AccountId).Select(s => s.Calls).ToArray());
+    }
+
+    [Fact]
+    public async Task No_image_cap_keeps_one_account_for_the_whole_batch()
+    {
+        var jobs = Enumerable.Range(1, 4).Select(i => Job($"p{i}")).ToList();
+        var factory = new ScriptedSessionFactory();
+
+        var result = await Build(factory, RotatingOptions(imagesPerAccount: 0)).RunAsync(jobs, Accounts(5), 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 4, 4, 0, 0);
+        Assert.Equal(1, result.AccountsUsed);
+        Assert.Equal(4, Assert.Single(factory.Sessions).Calls);
     }
 
     private sealed class CancellingProcessor(CancellationTokenSource cts) : IImageProcessor
