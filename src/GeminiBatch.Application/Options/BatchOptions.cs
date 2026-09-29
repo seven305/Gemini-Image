@@ -26,6 +26,12 @@ public sealed class BatchOptions
     /// </summary>
     public int MaxImagesPerAccount { get; set; } = 1;
 
+    /// <summary>
+    /// Every account turn generates an image from a randomly picked prompt (repeats allowed), so the batch is
+    /// eligible accounts × images per account, however many prompts were given. False = each prompt once, in order.
+    /// </summary>
+    public bool RandomizePrompts { get; set; } = true;
+
     public bool StripMetadata { get; set; } = true;
     public bool Headful { get; set; } = true;
 

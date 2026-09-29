@@ -73,7 +73,10 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   `StartupStaggerMs` staggers launches; accounts sharing an email/profile dir are used once. Account rotation:
   workers draw accounts from the roster in CSV order, one turn per account per run (`MaxImagesPerAccount`, 0 = no
   cap); jobs left when every account has had its turn fail with `StopReason.AccountsExhausted`. `BatchResult` carries
-  `StopReason`, `AccountsUsed` + `QuarantinedAccounts`. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
+  `StopReason`, `AccountsUsed` + `QuarantinedAccounts`. Prompt randomization (`RandomizePrompts`, default on):
+  `PromptPlanner` (called by MainForm before the grid is filled) makes one job per account turn with a randomly
+  picked prompt, repeats allowed; `PromptJob.Occurrence` makes repeated prompts' keys unique (`key#2`…). The seed is
+  derived from prompts + account emails, so re-planning the same batch resumes exactly. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
   `Fake:UnavailableAccountIds` / `SessionLostAccountIds` / `AccountLossAfterCalls` reproduce the failure paths offline.
 - Next: Phase 4 UI polish, Phase 5 deploy. Bonus: CSV, naming, EXIF.
 

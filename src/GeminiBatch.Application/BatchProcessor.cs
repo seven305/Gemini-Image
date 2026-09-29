@@ -68,7 +68,7 @@ public sealed class BatchProcessor
 
         await _manifest.LoadAsync(ct).ConfigureAwait(false);
 
-        var eligible = SelectEligible(accounts);
+        var eligible = AccountEligibility.Select(accounts, _logger);
         if (eligible.Count == 0)
             throw new InvalidOperationException("No enabled, non-quarantined accounts are available.");
 
@@ -143,28 +143,6 @@ public sealed class BatchProcessor
         var result = BuildResult(jobs, run, leftovers);
         LogSummary("finished", result);
         return result;
-    }
-
-    /// <summary>
-    /// Enabled, non-quarantined accounts, one per Google account and per profile directory: a profile can only be
-    /// open in one browser, and two browsers on one account would look like exactly the traffic we avoid.
-    /// </summary>
-    private List<GeminiAccount> SelectEligible(IReadOnlyList<GeminiAccount> accounts)
-    {
-        var emails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var profiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var eligible = new List<GeminiAccount>();
-
-        foreach (var account in accounts.Where(a => a.Enabled && !a.IsQuarantined))
-        {
-            if (!emails.Add(account.Email.Trim()) || !profiles.Add(Path.GetFullPath(account.UserDataDir)))
-            {
-                _logger.LogWarning("Account {AccountId} not used: it shares an email or profile directory with an earlier account", account.Id);
-                continue;
-            }
-            eligible.Add(account);
-        }
-        return eligible;
     }
 
     private async Task WorkerAsync(int index, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)

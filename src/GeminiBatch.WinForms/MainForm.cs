@@ -15,6 +15,7 @@ namespace GeminiBatch.WinForms;
 public sealed partial class MainForm : Form
 {
     private readonly BatchProcessor _processor = null!;
+    private readonly PromptPlanner _planner = null!;
     private readonly IPromptSource _promptSource = null!;
     private readonly ICsvAccountRoster _csvRoster = null!;
     private readonly BatchOptions _options = null!;
@@ -36,6 +37,7 @@ public sealed partial class MainForm : Form
 
     public MainForm(
         BatchProcessor processor,
+        PromptPlanner planner,
         IPromptSource promptSource,
         ICsvAccountRoster csvRoster,
         IOptions<BatchOptions> options,
@@ -43,6 +45,7 @@ public sealed partial class MainForm : Form
         : this()
     {
         _processor = processor;
+        _planner = planner;
         _promptSource = promptSource;
         _csvRoster = csvRoster;
         _options = options.Value;
@@ -62,8 +65,8 @@ public sealed partial class MainForm : Form
 
     private async Task StartAsync()
     {
-        var jobs = _promptSource.FromLines(_txtPrompts.Text);
-        if (jobs.Count == 0)
+        var prompts = _promptSource.FromLines(_txtPrompts.Text);
+        if (prompts.Count == 0)
         {
             MessageBox.Show(this, "Enter at least one prompt.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -81,10 +84,12 @@ public sealed partial class MainForm : Form
         var accounts = LoadRoster(csvPath);
         if (accounts is null) return;
 
+        // One job per account turn, each with a randomly picked prompt (unless RandomizePrompts is off).
+        var jobs = _planner.Plan(prompts, accounts);
         PopulateGrid(jobs);
         SetRunning(true);
         // Each worker signs its account in (one at a time, app-wide) when its profile turns out to be signed out.
-        _lblStatus.Text = $"Signing in accounts and running {jobs.Count} job(s)…";
+        _lblStatus.Text = $"Signing in accounts and running {jobs.Count} image(s) from {prompts.Count} prompt(s)…";
 
         // Progress<T> captures the UI SynchronizationContext here, so ApplyUpdate always runs on the UI thread.
         var progress = new Progress<JobUpdate>(ApplyUpdate);
