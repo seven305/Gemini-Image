@@ -22,7 +22,6 @@ public sealed partial class MainForm : Form
     private static readonly Color SkippedColor = Color.FromArgb(225, 225, 225);
 
     private readonly BatchProcessor _processor = null!;
-    private readonly PromptPlanner _planner = null!;
     private readonly IPromptSource _promptSource = null!;
     private readonly ICsvAccountRoster _csvRoster = null!;
     private readonly OutputLocation _output = null!;
@@ -36,8 +35,6 @@ public sealed partial class MainForm : Form
     private CancellationTokenSource? _cts;
     private bool _busy;
     private bool _stopping;
-    // The current/last run creates jobs as it goes, until every account reaches its daily limit (checkbox at Start).
-    private bool _untilLimitRun;
 
     // The account CSV the operator picked (re-read on every Start so edits and fresh state are picked up);
     // null = none chosen yet, so Start asks for one. _roster is its last successful read, for the preview and cap.
@@ -58,7 +55,6 @@ public sealed partial class MainForm : Form
 
     public MainForm(
         BatchProcessor processor,
-        PromptPlanner planner,
         IPromptSource promptSource,
         ICsvAccountRoster csvRoster,
         OutputLocation output,
@@ -67,7 +63,6 @@ public sealed partial class MainForm : Form
         : this()
     {
         _processor = processor;
-        _planner = planner;
         _promptSource = promptSource;
         _csvRoster = csvRoster;
         _output = output;
@@ -75,7 +70,6 @@ public sealed partial class MainForm : Form
         _logger = logger;
 
         _numConcurrency.Value = Math.Clamp(_options.DefaultConcurrency, 1, (int)_numConcurrency.Maximum);
-        _chkUntilLimit.Checked = _options.GenerateUntilDailyLimit;
 
         // The folder picked with Browse… last time wins over Batch:OutputFolder.
         if (UiSettings.Load().OutputFolder is { Length: > 0 } saved)
@@ -98,7 +92,6 @@ public sealed partial class MainForm : Form
     private void OnOpenOutputClick(object? sender, EventArgs e) => OpenOutputFolder();
     private void OnBrowseOutputClick(object? sender, EventArgs e) => BrowseOutputFolder();
     private void OnFormClosed(object? sender, FormClosedEventArgs e) => _cts?.Cancel();
-    private void OnUntilLimitChanged(object? sender, EventArgs e) => RefreshPromptPreview();
 
     private void OnPromptsTextChanged(object? sender, EventArgs e)
     {
@@ -106,7 +99,7 @@ public sealed partial class MainForm : Form
         // The operator typed or pasted: the text box is the prompt source again.
         _csvPrompts = null;
         _promptCsvName = null;
-        RefreshPromptPreview();
+        RefreshPromptPreview(refillGrid: true);
     }
 
     // ---- Behavior ---------------------------------------------------------------------------
@@ -143,37 +136,17 @@ public sealed partial class MainForm : Form
             return;
         }
 
-        // Until-limit: jobs are created while the run goes (a random prompt per image), so the grid starts empty.
-        // Otherwise one job per account turn, each with a randomly picked prompt (unless RandomizePrompts is off).
-        var untilLimit = _chkUntilLimit.Checked;
-        IReadOnlyList<PromptJob> jobs = untilLimit ? [] : _planner.Plan(prompts, accounts);
-        if (!untilLimit && jobs.Count == 0)
-        {
-            ShowValidation("Nothing to run: no usable accounts after removing duplicates.");
-            return;
-        }
-
-        _untilLimitRun = untilLimit;
+        // One image per prompt. Fresh jobs every Start, so a re-run never reuses the last run's mutated jobs.
+        var jobs = BuildJobs(prompts);
         PopulateGrid(jobs);
         SetRunning(true);
         var started = DateTime.Now;
         // Each worker runs its own browser and signs its account in (in parallel, up to Gemini:MaxConcurrentSignIns)
-        // when its profile turns out to be signed out.
+        // when its profile turns out to be signed out; an account generates until its daily limit, then the next one takes over.
         var concurrency = (int)_numConcurrency.Value;
-        if (untilLimit)
-        {
-            // The total is unknown until every account has hit its limit.
-            _progress.Style = ProgressBarStyle.Marquee;
-            _txtRunSummary.Text = $"Run started {started:HH:mm:ss} — each account generates images from {prompts.Count} prompt(s) until its daily limit, output: {outputFolder}";
-            _lblStatus.Text = $"Running until each account's daily limit with {concurrency} browser(s) at a time…";
-        }
-        else
-        {
-            _txtRunSummary.Text = $"Run started {started:HH:mm:ss} — {jobs.Count} image(s) from {prompts.Count} prompt(s), output: {outputFolder}";
-            _lblStatus.Text = $"Running {jobs.Count} image(s) with {concurrency} browser(s) at a time…";
-        }
-        _logger.LogInformation("Start clicked: {Mode}, {Jobs} planned job(s), concurrency {Concurrency}",
-            untilLimit ? "until daily limit" : "one turn per account", jobs.Count, concurrency);
+        _txtRunSummary.Text = $"Run started {started:HH:mm:ss} — {jobs.Count} image(s), one per prompt, output: {outputFolder}";
+        _lblStatus.Text = $"Running {jobs.Count} image(s) with {concurrency} browser(s) at a time…";
+        _logger.LogInformation("Start clicked: {Jobs} job(s), concurrency {Concurrency}", jobs.Count, concurrency);
 
         // Progress<T> captures the UI SynchronizationContext here, so ApplyUpdate always runs on the UI thread.
         var progress = new Progress<JobUpdate>(ApplyUpdate);
@@ -182,9 +155,7 @@ public sealed partial class MainForm : Form
 
         try
         {
-            var result = await Task.Run(() => untilLimit
-                ? _processor.RunUntilDailyLimitAsync(prompts, accounts, concurrency, progress, ct)
-                : _processor.RunAsync(jobs, accounts, concurrency, progress, ct), ct);
+            var result = await Task.Run(() => _processor.RunAsync(jobs, accounts, concurrency, progress, ct), ct);
             ReportFinished(result);
         }
         catch (OperationCanceledException)
@@ -205,7 +176,6 @@ public sealed partial class MainForm : Form
         {
             _cts.Dispose();
             _cts = null;
-            _progress.Style = ProgressBarStyle.Blocks;
             SetRunning(false);
             RefreshSummaryProgress();
         }
@@ -230,19 +200,17 @@ public sealed partial class MainForm : Form
         _btnLoadCsv.Enabled = !running;
         _btnLoadPrompts.Enabled = !running;
         _btnBrowseOutput.Enabled = !running;
-        _chkUntilLimit.Enabled = !running;
     }
 
     /// <summary>End-of-run summary, shown in the status strip and the summary box — never a modal, so an unattended run is not held up.</summary>
     private void ReportFinished(BatchResult result)
     {
-        var summary = _untilLimitRun
-            ? $"{result.Completed} image(s) generated · {result.Skipped} skipped · {result.Failed} failed"
-            : $"{result.Completed} completed · {result.Skipped} skipped · {result.Failed} failed of {result.Total}";
+        var summary = $"{result.Completed} completed · {result.Skipped} skipped · {result.Failed} failed of {result.Total}";
         var reason = result.StopReason switch
         {
             BatchStopReason.AllAccountsQuarantined => "Stopped early: all accounts quarantined.",
-            BatchStopReason.AccountsExhausted => "Stopped early: every account had its turn.",
+            BatchStopReason.AccountsExhausted => "Stopped early: every account reached its daily limit or was skipped before all images were "
+                + "generated (see the Failed rows). Start again (tomorrow or with more accounts) to resume; finished images are skipped.",
             _ => null,
         };
 
@@ -271,7 +239,7 @@ public sealed partial class MainForm : Form
     {
         if (_busy) return;
         if (PromptForCsv() is { } path && LoadRoster(path) is not null)
-            RefreshPromptPreview();
+            RefreshPromptPreview(refillGrid: false);
     }
 
     /// <summary>
@@ -320,39 +288,33 @@ public sealed partial class MainForm : Form
         {
             _settingPromptsText = false;
         }
-        RefreshPromptPreview();
+        RefreshPromptPreview(refillGrid: true);
     }
 
     /// <summary>
-    /// Updates the prompt count and the Ready text. The grid is not a preview: it lists the images of the current/last
-    /// run and is only refilled by Start, so editing the prompt pool after a run keeps that run's results visible.
+    /// Updates the prompt count and the Ready text. With <paramref name="refillGrid"/> (the prompts changed) the grid
+    /// shows one Pending row per prompt — the images Start will generate; switching the account CSV keeps the last
+    /// run's rows.
     /// </summary>
-    private void RefreshPromptPreview()
+    private void RefreshPromptPreview(bool refillGrid)
     {
         if (_busy) return;
 
         var prompts = CurrentPrompts();
-        var count = prompts.Count == 0 ? "No prompts loaded"
+        _lblPromptCount.Text = prompts.Count == 0 ? "No prompts loaded"
             : _promptCsvName is not null ? $"{prompts.Count} prompt(s) loaded from {_promptCsvName}"
             : $"{prompts.Count} prompt(s) loaded";
 
-        if (_chkUntilLimit.Checked)
-        {
-            // Nothing to plan: each image picks a random prompt from this pool until the accounts hit their limits.
-            _lblPromptCount.Text = count;
-            var accounts = _roster is not null ? $" · {_roster.Count(a => a.Enabled)} account(s)" : string.Empty;
-            _lblStatus.Text = prompts.Count == 0 ? "Idle"
-                : $"Ready — {prompts.Count} prompt(s) in the pool{accounts}; each account generates until its daily limit";
-            return;
-        }
+        var accounts = _roster is not null ? $" · {_roster.Count(a => a.Enabled)} account(s)" : string.Empty;
+        _lblStatus.Text = prompts.Count == 0 ? "Idle"
+            : $"Ready — {prompts.Count} image(s), one per prompt{accounts}; each account generates until its daily limit";
 
-        var jobs = _roster is not null ? _planner.Plan(prompts, _roster) : prompts;
-        if (!ReferenceEquals(jobs, prompts))
-            count += $" · {jobs.Count} image(s) planned across the accounts";
-
-        _lblPromptCount.Text = count;
-        _lblStatus.Text = jobs.Count == 0 ? "Idle" : $"Ready — {jobs.Count} image(s) to run";
+        if (refillGrid) PopulateGrid(BuildJobs(prompts));
     }
+
+    /// <summary>One fresh, Pending job (image) per prompt.</summary>
+    private static List<PromptJob> BuildJobs(IReadOnlyList<PromptJob> prompts) =>
+        prompts.Select(p => new PromptJob { Prompt = p.Prompt, DesiredFileName = p.DesiredFileName, Section = p.Section }).ToList();
 
     /// <summary>Asks for the account CSV (email, password, recovery email, 2FA key, proxy). Null when cancelled.</summary>
     private string? PromptForCsv()
@@ -487,8 +449,8 @@ public sealed partial class MainForm : Form
     }
 
     /// <summary>
-    /// One row per image. An account cycles through many prompts, so the prompt is not a column: it is the Filename
-    /// cell's tooltip, and the saved name (shown relative to the output folder) carries the section folder.
+    /// One row per image (= per prompt). The prompt is too long for a column: it is the Filename cell's tooltip, and the
+    /// saved name (shown relative to the output folder) carries the section folder.
     /// </summary>
     private DataGridViewRow AddRow(Guid id, string prompt, string? desiredFileName, JobStatus status)
     {
@@ -504,14 +466,7 @@ public sealed partial class MainForm : Form
     /// <summary>Updates only the affected row — no rebind, so the grid stays responsive under many updates.</summary>
     private void ApplyUpdate(JobUpdate update)
     {
-        if (!_rowsByJob.TryGetValue(update.Id, out var row))
-        {
-            // The until-limit mode creates jobs while it runs: the first update of a job adds its row.
-            if (!_busy || !_untilLimitRun) return;
-            row = AddRow(update.Id, update.Prompt, update.DesiredFileName, update.Status);
-            try { _grid.FirstDisplayedScrollingRowIndex = row.Index; }
-            catch (InvalidOperationException) { } // grid too small to scroll (e.g. minimized); cosmetic only
-        }
+        if (!_rowsByJob.TryGetValue(update.Id, out var row)) return;
 
         _statusByJob[update.Id] = update.Status;
         // The manifest skips already-finished jobs without an error; in-batch duplicates carry one.
@@ -548,9 +503,7 @@ public sealed partial class MainForm : Form
         var (completed, failed, skipped, running) = CountStatuses();
         var total = _statusByJob.Count;
 
-        var text = _untilLimitRun
-            ? $"{completed} generated · {failed} failed · {running} running (until daily limits)"
-            : $"{completed}/{total} complete · {failed} failed · {running} running";
+        var text = $"{completed}/{total} complete · {failed} failed · {running} running";
         if (skipped > 0) text += $" · {skipped} skipped";
         _lblStatus.Text = _stopping ? "Stopping… " + text : text;
         RefreshSummaryProgress();
@@ -559,10 +512,9 @@ public sealed partial class MainForm : Form
         _lblResume.Text = $"Resume detected: {_resumedJobs.Count} already done, skipping";
     }
 
-    /// <summary>The bar is a marquee during an until-limit run (no known total); otherwise done / total.</summary>
+    /// <summary>The bar shows done / total.</summary>
     private void RefreshSummaryProgress()
     {
-        if (_progress.Style == ProgressBarStyle.Marquee) return;
         var (completed, failed, skipped, _) = CountStatuses();
         _progress.Maximum = Math.Max(1, _statusByJob.Count);
         _progress.Value = Math.Min(_progress.Maximum, completed + failed + skipped);

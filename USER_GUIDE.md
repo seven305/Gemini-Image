@@ -139,9 +139,6 @@ Settings live in **`appsettings.json`** in the app folder. Open it in Notepad, c
 |---|---|---|
 | `Batch:DefaultConcurrency` | `5` | Starting value of **Concurrency:** |
 | `Batch:OutputFolder` | `output` | Default output folder (relative = next to the exe), used until you pick one with **Browse…** |
-| `Batch:MaxImagesPerAccount` | `1` | Images each account makes before its window closes and the next account takes over. `0` = no limit. |
-| `Batch:RandomizePrompts` | `true` | See [3.4](#34-how-many-images-will-be-made). `false` = each prompt once, in order. |
-| `Batch:GenerateUntilDailyLimit` | `true` | Whether **Generate until each account's daily limit** starts ticked. |
 | `Batch:MaxRetriesPerJob` | `3` | Retries for one image on the same account before giving up |
 | `Batch:GenerationTimeoutSeconds` | `180` | How long to wait for Gemini to finish one image |
 | `Batch:StartupStaggerMs` | `4000` | Delay between opening each Chrome window at the start |
@@ -160,7 +157,7 @@ You can type prompts or load a prompts CSV. Use the CSV when you want images sor
 
 ### 3.1 Typing prompts
 
-1. Click in the big box under **Prompt pool (one per line, # for comments) — each image uses a random prompt, or load a prompts CSV:**.
+1. Click in the big box under **Prompts (one per line, # for comments) — one image per prompt, or load a prompts CSV:**.
 2. Type or paste one prompt per line.
 3. Lines starting with `#` are ignored. Blank lines are ignored.
 4. The label under the box shows e.g. **3 prompt(s) loaded**.
@@ -180,12 +177,12 @@ Typed prompts get automatic file names (see [5.2](#52-file-names)).
 
 1. Click **Load prompts CSV…**.
 2. Pick the file.
-3. The prompts appear in the box, and the label shows e.g. **44 prompt(s) loaded from prompts.csv**.
+3. The prompts appear in the box, the label shows e.g. **45 prompt(s) loaded from prompts.csv**, and the grid lists one **Pending** row per prompt (45 rows).
 4. Each image is saved in its section's folder; once saved, the grid's **Filename** shows it with the folder, e.g. `A\A-2.jpg`.
 
 **Section format** (the client sheet): the prompt is read from the **`Image Prompt`** column, the folder from the **`Section`** column and the file name from the **`#`** column. Every other column (`Blend Ratio`, …) is ignored.
 
-The `#` id gets a dash between its letters and its number: `A2` → `A-2.jpg`, `B14` → `B-14.jpg`. An id that is not just letters + number is used as-is: `C-SPECIAL-1` → `C-SPECIAL-1.jpg`. A prompt used more than once (randomized runs) saves as `A-2_2.jpg`, `A-2_3.jpg`, … — nothing is ever overwritten. An empty `#` means an automatic name.
+The `#` id gets a dash between its letters and its number: `A2` → `A-2.jpg`, `B14` → `B-14.jpg`. An id that is not just letters + number is used as-is: `C-SPECIAL-1` → `C-SPECIAL-1.jpg`. If the name is already taken in that folder the image is saved as `A-2_2.jpg`, `A-2_3.jpg`, … — nothing is ever overwritten. An empty `#` means an automatic name.
 
 ```text
 #,Section,Blend Ratio,Woman Type,Flag Type,Image Prompt
@@ -220,44 +217,28 @@ Rules:
 
 ### 3.3 Check before you start
 
-The prompts are a **pool**: an account does not get one fixed prompt, each image it makes picks one at random. So the
-grid does not list anything before **Start** — it shows the images of the current (or last) run. Before you press
-**Start**, check:
+The grid lists the images that **Start** will make — one **Pending** row per prompt — as soon as the prompts are
+loaded or typed. Before you press **Start**, check:
 
-- the label under the box, e.g. **44 prompt(s) loaded from prompts.csv**;
-- the bottom bar, e.g. **Ready — 44 prompt(s) in the pool · 10 account(s); each account generates until its daily
-  limit** (or, with the tick box cleared, **Ready — N image(s) to run**).
+- the label under the box, e.g. **45 prompt(s) loaded from prompts.csv**;
+- the number of rows in the grid (45);
+- the bottom bar, e.g. **Ready — 45 image(s), one per prompt · 10 account(s); each account generates until its daily limit**.
 
-Editing the prompts after a run leaves that run's rows in the grid; they are cleared when you press **Start**.
+Loading a different accounts CSV after a run keeps that run's rows; loading or editing prompts replaces them.
 
 ### 3.4 How many images will be made
 
-**Generate until each account's daily limit** (the tick box right of **Load prompts CSV…**, ticked by default):
-
-- Each account keeps making images, **each from a prompt picked at random from your list**, until Gemini says the
-  account has reached its daily image limit. Then its window closes and the next account in the CSV takes over.
-- There is no plan up front: the grid is empty when you press Start, and a new row appears for every image as it is
-  started. The progress bar just moves (the total is not known until the limits are hit).
-- The run ends when every account has reached its limit (or was skipped). The summary lists the accounts that reached
-  their limit. The last image that was handed on when no account was left shows **Skipped** with *Not generated: every
-  account reached its daily limit or was skipped.*
-- Running again the same day just finds every account at its limit again; run it the next day. New images never
-  replace earlier ones.
-- `MaxImagesPerAccount` is ignored in this mode.
+- **One image per prompt.** 45 prompts in the CSV → 45 images.
+- The first account in the accounts CSV keeps making images until Gemini says it has reached its **daily image
+  limit**. Then its window closes and the next account in the CSV takes over the remaining images. With
+  **Concurrency** 3, three accounts work at the same time, each until its own limit.
+- The image an account was working on when it hit its limit goes back to **Pending** and is made by the next account.
+- The run ends when every image is made. If every account reaches its limit (or is skipped) first, the images left
+  show **Failed** with *Not generated: every account reached its daily limit or was skipped…*. Click **Start** again
+  the next day (or with more accounts) — finished images are skipped and only the rest are made.
 - How the limit is recognized: by the wording of Gemini's reply when it makes no image. If Gemini words it in a way
   the app does not know, the account fails 3 images in a row and is quarantined instead — the batch still moves on,
   and the screenshot in `diagnostics` shows the message (send it to the developer).
-
-**Untick it** for the planned mode — one prompt per account, then the next account. With the default settings
-(`RandomizePrompts` on, `MaxImagesPerAccount` = 1):
-
-- **Each account makes one image**, from a prompt picked at random from your list. Prompts can repeat.
-- So **number of images = number of accounts**, no matter how many prompts you give. 5 prompts and 10 accounts → 10 images.
-- The label shows this, e.g. **5 prompt(s) loaded · 10 image(s) planned across the accounts**. The planned images
-  appear in the grid as **Pending** when you press **Start**.
-- The random choice is fixed for the same prompts + same accounts, so re-running the same batch gives the same plan (this is what makes resume work).
-
-If `RandomizePrompts` is `false`, each prompt is made once, in order, and accounts take turns. If there are more prompts than accounts × `MaxImagesPerAccount`, the extra prompts fail with **No accounts left to run this job (all used or quarantined).**
 
 ---
 
@@ -268,8 +249,7 @@ If `RandomizePrompts` is `false`, each prompt is made once, in order, and accoun
 1. Check prompts, accounts, and **Concurrency:**.
 2. Click **Start**.
 3. If no accounts CSV was chosen yet, pick it now.
-4. The bottom bar shows **Running until each account's daily limit with N browser(s) at a time…** (with the tick box
-   cleared: **Running N image(s) with N browser(s) at a time…**).
+4. The bottom bar shows **Running 45 image(s) with N browser(s) at a time…**.
 5. Chrome windows open one after another (a few seconds apart). Leave them alone.
 
 If something is missing, a **Cannot start** message explains what to fix (for example, "Enter at least one prompt…"). Nothing pops up after the run has started.
@@ -290,8 +270,8 @@ ed_mug.jpg`; no folder = the output folder itself). **Hover** to see the prompt 
 | **Started** | Time the image was first started |
 | **Error** | Why it failed or was moved (hover for the full text) |
 
-There is no Prompt or Section column: each account works through many prompts picked at random from the pool, so the
-prompt is in the **Filename** tooltip and the section is the folder in front of the file name.
+There is no Prompt or Section column: prompts are too long for a column, so the prompt is in the **Filename** tooltip
+and the section is the folder in front of the file name.
 
 | Status | Colour | Meaning |
 |---|---|---|
@@ -309,9 +289,8 @@ A row that goes back to **Pending** with an error message was moved to another a
 
 ![Status strip](docs/img/status-strip.png)
 
-- Live counts, e.g. **12 generated · 0 failed · 3 running (until daily limits)** (with the tick box cleared:
-  **3/10 complete · 0 failed · 2 running · 1 skipped**).
-- A progress bar on the right. In the daily-limit mode it just moves, because the total is not known in advance.
+- Live counts, e.g. **12/45 complete · 0 failed · 3 running · 1 skipped**.
+- A progress bar on the right (finished images out of the total).
 - **Resume detected: N already done, skipping** (green) when earlier results were found.
 
 ### 4.4 Stopping safely
@@ -333,7 +312,8 @@ The bar shows **Done — …** and the box at the bottom shows the summary:
 
 - Counts: completed, skipped, failed, and how many accounts were used.
 - **Resume: N image(s) were already done in an earlier run and were skipped.** (if any)
-- **Stopped early: every account had its turn.** — there were more images than working accounts.
+- **Daily limit reached: N account(s) — …** — the accounts that hit their daily image limit.
+- **Stopped early: every account reached its daily limit or was skipped…** — the accounts ran out before every image was made; the rest are **Failed** and are made on the next **Start**.
 - **Stopped early: all accounts quarantined.** — no account could work.
 - **Skipped / quarantined accounts:** each problem account with its reason.
 
@@ -357,8 +337,7 @@ Images are saved in the format Gemini serves — usually **`.jpg`** (sometimes `
 
 - From a prompts CSV with a filename: `red_mug.jpg`.
 - Typed prompts (or an empty filename): `gemini_YYYYMMDD_HHMMSS.jpg`, e.g. `gemini_20260930_142501.jpg`.
-- **Files are never overwritten.** If the name is taken in that folder, the app adds a number: `red_mug.jpg`, `red_mug_2.jpg`, `red_mug_3.jpg`, … This is also what happens when the same prompt is used more than once in a randomized batch.
-- Characters Windows does not allow in file names are replaced with `_`.
+- **Files are never overwritten.** If the name is taken in that folder, the app adds a number: `red_mug.jpg`, `red_mug_2.jpg`, `red_mug_3.jpg`, …- Characters Windows does not allow in file names are replaced with `_`.
 
 ### 5.3 Re-running and resume
 
@@ -370,7 +349,8 @@ The file `manifest.json` in the output folder records every image that was saved
 
 Things to know:
 
-- **Changing the prompts or the list of emails in the accounts CSV changes the random plan.** The app then sees new images to make and makes them (saved as new files; nothing is overwritten). Change passwords/proxies freely — only the emails matter for the plan.
+- An image is recognized by its section + `#` id from the prompts CSV (typed prompts: by the prompt text). Changing the accounts CSV does not matter; a new or reworded prompt is a new image.
+- **Using an output folder from an older version of the app:** images it already recorded under the same section + `#` id are skipped. Use a new output folder for a fresh run.
 - **Deleting an image file does not make the app regenerate it** — it is still in `manifest.json`.
 - **To start completely fresh**, move or rename `manifest.json` (or use a new output folder). Old images stay; new ones get `_2`, `_3` names if the names clash.
 
@@ -412,9 +392,9 @@ The batch always continues with the other accounts. Expect accounts to need sign
 - Open the newest file in `logs\` to see what is happening right now.
 - If nothing has changed for 10+ minutes: click **Stop**, wait for **Stopped**, then **Start** again. Finished images are kept.
 
-### Many rows say "No accounts left to run this job"
+### Many rows say "Not generated: every account reached its daily limit or was skipped"
 
-Every account already had its turn, or the rest were quarantined. Fix or add accounts, then click **Start** again — finished images are skipped and the rest are retried.
+Every account reached its daily image limit or was quarantined before those images were made. Click **Start** again the next day, or add/fix accounts — finished images are skipped and the rest are made.
 
 ### The RDP session locks or the windows stop working after disconnecting
 
@@ -451,8 +431,8 @@ PROMPTS
 
 RUN
   • Set Concurrency (3–5; max = number of accounts) → Start
-  • Default (tick box on): each account makes images until its daily limit, random prompt per image
-  • Tick box off: 1 image per account, random prompt → images = accounts
+  • One image per prompt (45 prompts → 45 rows/images)
+  • Each account makes images until its daily limit, then the next account takes over
   • Hands off the Chrome windows · sign-in is automatic, one account at a time
   • Stop → wait for "Stopped" → Start later to resume
 

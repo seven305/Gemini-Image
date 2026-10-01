@@ -29,7 +29,6 @@ public sealed class ConcurrencyAndResumeTests : IDisposable
         MinInterPromptDelayMs = 0,
         MaxInterPromptDelayMs = 5,
         StartupStaggerMs = 0,
-        MaxImagesPerAccount = 0, // 3 fake accounts finish all 20 jobs; rotation is covered in the Application tests
         StripMetadata = false,
     });
 

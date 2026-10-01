@@ -207,16 +207,6 @@ sam.lee@gmail.com,An0therPass,,,
 <td>The resume record. Keep it with the images.</td>
 </tr>
 <tr>
-<td><code>Batch:MaxImagesPerAccount</code></td>
-<td><code>1</code></td>
-<td>Images each account makes before its window closes and the next account takes over. <code>0</code> = no limit.</td>
-</tr>
-<tr>
-<td><code>Batch:RandomizePrompts</code></td>
-<td><code>true</code></td>
-<td>See <a href="#34-how-many-images-will-be-made">3.4</a>. <code>false</code> = each prompt once, in order.</td>
-</tr>
-<tr>
 <td><code>Batch:MaxRetriesPerJob</code></td>
 <td><code>3</code></td>
 <td>Retries for one image on the same account before giving up</td>
@@ -298,16 +288,15 @@ book_stack | A stack of hardcover books, top-down view
 <p><strong>Careful:</strong> if you type anything in the prompt box after loading a CSV, the app switches back to "typed prompts" and <strong>the file names from the CSV are dropped</strong>. To get them back, load the CSV again.</p>
 </blockquote>
 <h3 id="33-check-the-preview">3.3 Check the preview</h3>
-<p>Before you press <strong>Start</strong>, the grid already lists the images the app plans to make. Each row shows the <strong>Prompt</strong> (hover for the full text), the <strong>Filename</strong> (or <strong>(auto)</strong>), and <strong>Status</strong> = <strong>Pending</strong>. The bottom bar shows <strong>Ready — N image(s) to run</strong>.</p>
+<p>Before you press <strong>Start</strong>, the grid already lists the images the app will make — <strong>one Pending row per prompt</strong> (45 prompts → 45 rows). Hover the <strong>Filename</strong> (or <strong>(auto)</strong>) to see the prompt. The bottom bar shows e.g. <strong>Ready — 45 image(s), one per prompt · 10 account(s); each account generates until its daily limit</strong>.</p>
 <h3 id="34-how-many-images-will-be-made">3.4 How many images will be made</h3>
-<p>With the default settings (<code>RandomizePrompts</code> on, <code>MaxImagesPerAccount</code> = 1):</p>
 <ul>
-<li><strong>Each account makes one image</strong>, from a prompt picked at random from your list. Prompts can repeat.</li>
-<li>So <strong>number of images = number of accounts</strong>, no matter how many prompts you give. 5 prompts and 10 accounts → 10 images.</li>
-<li>The label shows this, e.g. <strong>5 prompt(s) loaded · 10 image(s) planned across the accounts</strong>.</li>
-<li>The random choice is fixed for the same prompts + same accounts, so re-running the same batch gives the same plan (this is what makes resume work).</li>
+<li><strong>One image per prompt.</strong> 45 prompts in the CSV → 45 images.</li>
+<li>The first account in the accounts CSV keeps making images until Gemini says it has reached its <strong>daily image limit</strong>. Then its window closes and the next account in the CSV takes over the remaining images. With <strong>Concurrency</strong> 3, three accounts work at the same time, each until its own limit.</li>
+<li>The image an account was working on when it hit its limit goes back to <strong>Pending</strong> and is made by the next account.</li>
+<li>The run ends when every image is made. If every account reaches its limit (or is skipped) first, the images left show <strong>Failed</strong> with <em>Not generated: every account reached its daily limit or was skipped…</em>. Click <strong>Start</strong> again the next day (or with more accounts) — finished images are skipped and only the rest are made.</li>
+<li>How the limit is recognized: by the wording of Gemini's reply when it makes no image. If Gemini words it in a way the app does not know, the account fails 3 images in a row and is quarantined instead — the batch still moves on, and the screenshot in <code>diagnostics</code> shows the message (send it to the developer).</li>
 </ul>
-<p>If <code>RandomizePrompts</code> is <code>false</code>, each prompt is made once, in order, and accounts take turns. If there are more prompts than accounts × <code>MaxImagesPerAccount</code>, the extra prompts fail with <strong>No accounts left to run this job (all used or quarantined).</strong></p>
 <hr />
 <h2 id="4-running-a-batch">4. Running a batch</h2>
 <h3 id="41-start">4.1 Start</h3>
@@ -315,7 +304,7 @@ book_stack | A stack of hardcover books, top-down view
 <li>Check prompts, accounts, and <strong>Concurrency:</strong>.</li>
 <li>Click <strong>Start</strong>.</li>
 <li>If no accounts CSV was chosen yet, pick it now.</li>
-<li>The bottom bar shows <strong>Signing in accounts and running N image(s)…</strong>.</li>
+<li>The bottom bar shows <strong>Running 45 image(s) with N browser(s) at a time…</strong>.</li>
 <li>Chrome windows open one after another (a few seconds apart). Leave them alone.</li>
 </ol>
 <p>If something is missing, a <strong>Cannot start</strong> message explains what to fix (for example, "Enter at least one prompt…"). Nothing pops up after the run has started.</p>
@@ -425,7 +414,8 @@ book_stack | A stack of hardcover books, top-down view
 <ul>
 <li>Counts: completed, skipped, failed, and how many accounts were used.</li>
 <li><strong>Resume: N image(s) were already done in an earlier run and were skipped.</strong> (if any)</li>
-<li><strong>Stopped early: every account had its turn.</strong> — there were more images than working accounts.</li>
+<li><strong>Daily limit reached: N account(s) — …</strong> — the accounts that hit their daily image limit.</li>
+<li><strong>Stopped early: every account reached its daily limit or was skipped…</strong> — the accounts ran out before every image was made; the rest are <strong>Failed</strong> and are made on the next <strong>Start</strong>.</li>
 <li><strong>Stopped early: all accounts quarantined.</strong> — no account could work.</li>
 <li><strong>Skipped / quarantined accounts:</strong> each problem account with its reason.</li>
 </ul>
@@ -441,7 +431,7 @@ book_stack | A stack of hardcover books, top-down view
 <ul>
 <li>From a prompts CSV with a filename: <code>red_mug.jpg</code>.</li>
 <li>Typed prompts (or an empty filename): <code>gemini_YYYYMMDD_HHMMSS.jpg</code>, e.g. <code>gemini_20260930_142501.jpg</code>.</li>
-<li><strong>Files are never overwritten.</strong> If the name is taken, the app adds a number: <code>red_mug.jpg</code>, <code>red_mug_2.jpg</code>, <code>red_mug_3.jpg</code>, … This is also what happens when the same prompt is used more than once in a randomized batch.</li>
+<li><strong>Files are never overwritten.</strong> If the name is taken, the app adds a number: <code>red_mug.jpg</code>, <code>red_mug_2.jpg</code>, <code>red_mug_3.jpg</code>, …</li>
 <li>Characters Windows does not allow in file names are replaced with <code>_</code>.</li>
 </ul>
 <h3 id="53-re-running-and-resume">5.3 Re-running and resume</h3>
@@ -453,7 +443,8 @@ book_stack | A stack of hardcover books, top-down view
 </ul>
 <p>Things to know:</p>
 <ul>
-<li><strong>Changing the prompts or the list of emails in the accounts CSV changes the random plan.</strong> The app then sees new images to make and makes them (saved as new files; nothing is overwritten). Change passwords/proxies freely — only the emails matter for the plan.</li>
+<li>An image is recognized by its section + <code>#</code> id from the prompts CSV (typed prompts: by the prompt text). Changing the accounts CSV does not matter; a new or reworded prompt is a new image.</li>
+<li><strong>Using an output folder from an older version of the app:</strong> images it already recorded under the same section + <code>#</code> id are skipped. Use a new output folder for a fresh run.</li>
 <li><strong>Deleting an image file does not make the app regenerate it</strong> — it is still in <code>manifest.json</code>.</li>
 <li><strong>To start completely fresh</strong>, move or rename <code>manifest.json</code> (or use a new output folder). Old images stay; new ones get <code>_2</code>, <code>_3</code> names if the names clash.</li>
 </ul>
@@ -521,8 +512,8 @@ book_stack | A stack of hardcover books, top-down view
 <li>Open the newest file in <code>logs\</code> to see what is happening right now.</li>
 <li>If nothing has changed for 10+ minutes: click <strong>Stop</strong>, wait for <strong>Stopped</strong>, then <strong>Start</strong> again. Finished images are kept.</li>
 </ul>
-<h3 id="many-rows-say-no-accounts-left-to-run-this-job">Many rows say "No accounts left to run this job"</h3>
-<p>Every account already had its turn, or the rest were quarantined. Fix or add accounts, then click <strong>Start</strong> again — finished images are skipped and the rest are retried.</p>
+<h3 id="many-rows-say-not-generated">Many rows say "Not generated: every account reached its daily limit or was skipped"</h3>
+<p>Every account reached its daily image limit or was quarantined before those images were made. Click <strong>Start</strong> again the next day, or add/fix accounts — finished images are skipped and the rest are made.</p>
 <h3 id="the-rdp-session-locks-or-the-windows-stop-working-after-disconnecting">The RDP session locks or the windows stop working after disconnecting</h3>
 <p>The app drives real Chrome windows, which need an active, unlocked desktop. General Windows advice:</p>
 <ul>
@@ -553,7 +544,8 @@ PROMPTS
 
 RUN
   • Set Concurrency (3–5; max = number of accounts) → Start
-  • Default: 1 image per account, random prompt → images = accounts
+  • One image per prompt (45 prompts → 45 rows/images)
+  • Each account makes images until its daily limit, then the next account takes over
   • Hands off the Chrome windows · sign-in is automatic, one account at a time
   • Stop → wait for &quot;Stopped&quot; → Start later to resume
 

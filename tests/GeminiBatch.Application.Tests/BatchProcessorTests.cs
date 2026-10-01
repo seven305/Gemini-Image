@@ -25,7 +25,6 @@ public sealed class BatchProcessorTests
             StripMetadata = true,
             StartupStaggerMs = 0,
             MaxSessionRestarts = 1,
-            MaxImagesPerAccount = 0, // no rotation: these tests exercise one account per worker; rotation has its own tests
         };
         configure?.Invoke(o);
         return o;
@@ -44,9 +43,9 @@ public sealed class BatchProcessorTests
             Microsoft.Extensions.Options.Options.Create(options ?? FastOptions()),
             NullLogger<BatchProcessor>.Instance);
 
-    private const string NoAccountsLeft = "No accounts left to run this job (all used or quarantined).";
+    private const string NoAccountsLeft =
+        "Not generated: every account reached its daily limit or was skipped. Start again (tomorrow or with more accounts) to resume.";
 
-    private static BatchOptions RotatingOptions(int imagesPerAccount = 1) => FastOptions(o => o.MaxImagesPerAccount = imagesPerAccount);
 
     private static GeminiAccount[] Accounts(int count) =>
         Enumerable.Range(0, count).Select(i => Account(((char)('a' + i)).ToString())).ToArray();
@@ -234,7 +233,7 @@ public sealed class BatchProcessorTests
             new PromptJob { Prompt = "no section" },
         };
 
-        var result = await Build(new ScriptedSessionFactory(), FastOptions(o => o.MaxImagesPerAccount = 0), storage: storage)
+        var result = await Build(new ScriptedSessionFactory(), FastOptions(), storage: storage)
             .RunAsync(jobs, [Account("a")], 1, new CapturingProgress(), CancellationToken.None);
 
         AssertCounts(result, 2, 2, 0, 0);
@@ -496,39 +495,63 @@ public sealed class BatchProcessorTests
         Assert.True(times[2] - times[0] >= TimeSpan.FromMilliseconds(280), $"spread was {(times[2] - times[0]).TotalMilliseconds} ms");
     }
 
-    // --- Account rotation: workers draw the next unused account from the roster after each account's turn ---
+    // --- Account rotation: an account generates until its daily limit, then the next unused account takes over ---
+
+    /// <summary>Succeeds <paramref name="images"/> times, then reports the daily limit on every call.</summary>
+    private static GenerateBehaviour LimitAfter(int images) => (prompt, call, ct) =>
+        call > images
+            ? throw new AccountUnavailableException(AccountUnavailableReason.DailyLimitReached, $"limit after {images}")
+            : ScriptedSessionFactory.Succeed(prompt, call, ct);
 
     [Fact]
-    public async Task Concurrency_1_uses_one_account_per_image_in_roster_order_one_browser_at_a_time()
+    public async Task One_account_generates_every_image_while_it_has_no_limit()
     {
-        var jobs = Enumerable.Range(1, 3).Select(i => Job($"p{i}")).ToList();
+        var jobs = Enumerable.Range(1, 4).Select(i => Job($"p{i}")).ToList();
         var factory = new ScriptedSessionFactory();
 
-        var result = await Build(factory, RotatingOptions()).RunAsync(jobs, Accounts(5), 1, new CapturingProgress(), CancellationToken.None);
+        var result = await Build(factory).RunAsync(jobs, Accounts(5), 1, new CapturingProgress(), CancellationToken.None);
 
-        AssertCounts(result, 3, 3, 0, 0);
+        AssertCounts(result, 4, 4, 0, 0);
         Assert.Equal(BatchStopReason.Finished, result.StopReason);
-        Assert.Equal(3, result.AccountsUsed);
-        Assert.Equal(["a", "b", "c"], factory.LaunchOrder.ToArray()); // d and e never launched
-        Assert.Equal(1, factory.MaxActiveSessions);
-        Assert.All(factory.Sessions, s => { Assert.Equal(1, s.Calls); Assert.True(s.Disposed); });
-        Assert.Equal(["a", "b", "c"], jobs.Select(j => j.AssignedAccountId!).ToArray());
+        Assert.Equal(1, result.AccountsUsed);
+        Assert.Equal(4, Assert.Single(factory.Sessions).Calls);
     }
 
     [Fact]
-    public async Task When_every_account_has_had_its_turn_leftover_jobs_fail_with_AccountsExhausted()
+    public async Task Each_account_runs_until_its_daily_limit_then_the_next_account_in_the_roster_takes_over()
     {
         var jobs = Enumerable.Range(1, 5).Select(i => Job($"p{i}")).ToList();
-        var accounts = Accounts(3);
+        var accounts = Accounts(5);
+        var factory = new ScriptedSessionFactory().OnGenerate("a", LimitAfter(2)).OnGenerate("b", LimitAfter(2));
 
-        var result = await Build(new ScriptedSessionFactory(), RotatingOptions()).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
+        var result = await Build(factory).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
 
-        AssertCounts(result, 5, 3, 0, 2);
-        Assert.Equal(BatchStopReason.AccountsExhausted, result.StopReason);
-        Assert.Equal(3, result.AccountsUsed);
+        AssertCounts(result, 5, 5, 0, 0);
+        Assert.Equal(BatchStopReason.Finished, result.StopReason);
+        Assert.Equal(["a", "b", "c"], factory.LaunchOrder.ToArray()); // d and e never launched
+        Assert.Equal(1, factory.MaxActiveSessions);
+        Assert.All(factory.Sessions, s => Assert.True(s.Disposed));
+        Assert.Equal(["a@example.com", "b@example.com"], result.LimitReachedAccounts);
         Assert.Empty(result.QuarantinedAccounts);
-        Assert.DoesNotContain(accounts, a => a.IsQuarantined); // used up is not the same as quarantined
-        Assert.Equal(2, jobs.Count(j => j.LastError == NoAccountsLeft));
+        Assert.DoesNotContain(accounts, a => a.IsQuarantined);
+        Assert.Equal(["a", "a", "b", "b", "c"], jobs.Select(j => j.AssignedAccountId!).Order().ToArray());
+    }
+
+    [Fact]
+    public async Task When_every_account_reaches_its_limit_leftover_jobs_fail_with_AccountsExhausted()
+    {
+        var jobs = Enumerable.Range(1, 5).Select(i => Job($"p{i}")).ToList();
+        var accounts = Accounts(2);
+        var factory = new ScriptedSessionFactory().OnGenerate("a", LimitAfter(1)).OnGenerate("b", LimitAfter(1));
+
+        var result = await Build(factory).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 5, 2, 0, 3);
+        Assert.Equal(BatchStopReason.AccountsExhausted, result.StopReason);
+        Assert.Equal(2, result.AccountsUsed);
+        Assert.Empty(result.QuarantinedAccounts);
+        Assert.DoesNotContain(accounts, a => a.IsQuarantined); // limit reached is not the same as quarantined
+        Assert.Equal(3, jobs.Count(j => j.LastError == NoAccountsLeft));
     }
 
     [Fact]
@@ -539,64 +562,33 @@ public sealed class BatchProcessorTests
         var factory = new ScriptedSessionFactory()
             .OnGenerate("a", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.Challenged));
 
-        var result = await Build(factory, RotatingOptions()).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
+        var result = await Build(factory).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
 
         AssertCounts(result, 2, 2, 0, 0);
         Assert.True(accounts[0].IsQuarantined);
-        Assert.Equal(["a", "b", "c"], factory.LaunchOrder.ToArray());
-        Assert.Equal(["b", "c"], jobs.Select(j => j.AssignedAccountId!).Order().ToArray());
+        Assert.Equal(["a", "b"], factory.LaunchOrder.ToArray());
+        Assert.All(jobs, j => Assert.Equal("b", j.AssignedAccountId));
         Assert.Equal("a", Assert.Single(result.QuarantinedAccounts).Id);
     }
 
     [Fact]
     public async Task Concurrency_2_rotates_accounts_with_at_most_two_browsers_open()
     {
-        var jobs = Enumerable.Range(1, 4).Select(i => Job($"p{i}")).ToList();
+        var jobs = Enumerable.Range(1, 8).Select(i => Job($"p{i}")).ToList();
         var factory = new ScriptedSessionFactory();
-        foreach (var id in new[] { "a", "b", "c", "d" })
-            factory.OnGenerate(id, async (p, c, ct) => { await Task.Delay(20, ct); return await ScriptedSessionFactory.Succeed(p, c, ct); });
+        foreach (var id in new[] { "a", "b", "c", "d", "e", "f" })
+        {
+            var limited = LimitAfter(2);
+            factory.OnGenerate(id, async (p, c, ct) => { await Task.Delay(20, ct); return await limited(p, c, ct); });
+        }
 
-        var result = await Build(factory, RotatingOptions()).RunAsync(jobs, Accounts(6), 2, new CapturingProgress(), CancellationToken.None);
+        var result = await Build(factory).RunAsync(jobs, Accounts(6), 2, new CapturingProgress(), CancellationToken.None);
 
-        AssertCounts(result, 4, 4, 0, 0);
-        Assert.Equal(4, result.AccountsUsed);
-        Assert.Equal(4, factory.Sessions.Count);
+        AssertCounts(result, 8, 8, 0, 0);
+        Assert.True(result.AccountsUsed >= 4);
         Assert.Equal(2, factory.MaxActiveSessions);
+        Assert.All(jobs.GroupBy(j => j.AssignedAccountId), g => Assert.True(g.Count() <= 2)); // nobody went past its limit
     }
-
-    [Fact]
-    public async Task Image_cap_above_one_lets_an_account_generate_that_many_before_rotating()
-    {
-        var jobs = Enumerable.Range(1, 5).Select(i => Job($"p{i}")).ToList();
-        var factory = new ScriptedSessionFactory();
-
-        var result = await Build(factory, RotatingOptions(imagesPerAccount: 2)).RunAsync(jobs, Accounts(5), 1, new CapturingProgress(), CancellationToken.None);
-
-        AssertCounts(result, 5, 5, 0, 0);
-        Assert.Equal(["a", "b", "c"], factory.LaunchOrder.ToArray());
-        Assert.Equal([2, 2, 1], factory.Sessions.OrderBy(s => s.AccountId).Select(s => s.Calls).ToArray());
-    }
-
-    [Fact]
-    public async Task No_image_cap_keeps_one_account_for_the_whole_batch()
-    {
-        var jobs = Enumerable.Range(1, 4).Select(i => Job($"p{i}")).ToList();
-        var factory = new ScriptedSessionFactory();
-
-        var result = await Build(factory, RotatingOptions(imagesPerAccount: 0)).RunAsync(jobs, Accounts(5), 1, new CapturingProgress(), CancellationToken.None);
-
-        AssertCounts(result, 4, 4, 0, 0);
-        Assert.Equal(1, result.AccountsUsed);
-        Assert.Equal(4, Assert.Single(factory.Sessions).Calls);
-    }
-
-    // --- Daily limit: the account's turn ends (no quarantine) and its job moves on ---
-
-    /// <summary>Succeeds <paramref name="images"/> times, then reports the daily limit on every call.</summary>
-    private static GenerateBehaviour LimitAfter(int images) => (prompt, call, ct) =>
-        call > images
-            ? throw new AccountUnavailableException(AccountUnavailableReason.DailyLimitReached, $"limit after {images}")
-            : ScriptedSessionFactory.Succeed(prompt, call, ct);
 
     [Fact]
     public async Task Daily_limit_hands_the_job_to_the_next_account_without_quarantine()
@@ -605,70 +597,15 @@ public sealed class BatchProcessorTests
         var accounts = Accounts(3);
         var factory = new ScriptedSessionFactory().OnGenerate("a", LimitAfter(0));
 
-        var result = await Build(factory, RotatingOptions()).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
+        var result = await Build(factory).RunAsync(jobs, accounts, 1, new CapturingProgress(), CancellationToken.None);
 
         AssertCounts(result, 2, 2, 0, 0);
         Assert.Equal(BatchStopReason.Finished, result.StopReason);
         Assert.False(accounts[0].IsQuarantined);
         Assert.Empty(result.QuarantinedAccounts);
         Assert.Equal(["a@example.com"], result.LimitReachedAccounts);
-        Assert.Equal(["b", "c"], jobs.Select(j => j.AssignedAccountId!).Order().ToArray());
-        Assert.Equal(3, jobs.Sum(j => j.Attempts)); // one attempt on a (a limit hit is never retried), one each on b and c
-    }
-
-    [Fact]
-    public async Task Until_limit_mode_runs_each_account_until_its_limit_with_random_prompts()
-    {
-        var prompts = new[] { Job("cat"), Job("dog") };
-        var accounts = Accounts(2);
-        var factory = new ScriptedSessionFactory().OnGenerate("a", LimitAfter(3)).OnGenerate("b", LimitAfter(2));
-        // Keys finished by an earlier run must not swallow new images.
-        var manifest = new InMemoryManifest(Job("cat").ManifestKey, Job("dog").ManifestKey);
-        var progress = new CapturingProgress();
-
-        // RotatingOptions caps accounts at 1 image; the until-limit mode ignores that cap.
-        var result = await Build(factory, RotatingOptions(), manifest: manifest)
-            .RunUntilDailyLimitAsync(prompts, accounts, 1, progress, CancellationToken.None);
-
-        AssertCounts(result, 6, 5, 1, 0); // the 6th job hit b's limit and had no account left
-        Assert.Equal(BatchStopReason.Finished, result.StopReason);
-        Assert.Equal(2, result.AccountsUsed);
-        Assert.Empty(result.QuarantinedAccounts);
-        Assert.Equal(["a@example.com", "b@example.com"], result.LimitReachedAccounts);
-        Assert.Equal(["a", "b"], factory.LaunchOrder.ToArray());
-        Assert.All(factory.Sessions.SelectMany(s => s.Prompts), p => Assert.Contains(p, new[] { "cat", "dog" }));
-        Assert.Equal(7, manifest.Entries.Count); // 2 pre-seeded + 5 new, all distinct keys
-        Assert.Equal(6, progress.Updates.Select(u => u.Id).Distinct().Count());
-        Assert.All(progress.Updates, u => Assert.Contains(u.Prompt, new[] { "cat", "dog" }));
-    }
-
-    [Fact]
-    public async Task Until_limit_mode_reports_all_quarantined_when_no_account_works()
-    {
-        var factory = new ScriptedSessionFactory()
-            .OnGenerate("a", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.Challenged))
-            .OnGenerate("b", ScriptedSessionFactory.AlwaysUnavailable(AccountUnavailableReason.Challenged));
-
-        var result = await Build(factory).RunUntilDailyLimitAsync([Job("cat")], Accounts(2), 2, new CapturingProgress(), CancellationToken.None);
-
-        Assert.Equal(BatchStopReason.AllAccountsQuarantined, result.StopReason);
-        Assert.Equal(0, result.Completed);
-        Assert.Equal(2, result.QuarantinedAccounts.Count);
-    }
-
-    [Fact]
-    public async Task Until_limit_mode_stops_when_cancelled()
-    {
-        using var cts = new CancellationTokenSource();
-        var completed = 0;
-        var progress = new InlineProgress(u =>
-        {
-            if (u.Status == JobStatus.Completed && Interlocked.Increment(ref completed) == 3) cts.Cancel();
-        });
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            Build(new ScriptedSessionFactory()).RunUntilDailyLimitAsync([Job("cat")], Accounts(1), 1, progress, cts.Token));
-        Assert.True(Volatile.Read(ref completed) >= 3);
+        Assert.All(jobs, j => Assert.Equal("b", j.AssignedAccountId));
+        Assert.Equal(3, jobs.Sum(j => j.Attempts)); // one attempt on a (a limit hit is never retried), one each on b
     }
 
     private sealed class InlineProgress(Action<JobUpdate> onReport) : IProgress<JobUpdate>

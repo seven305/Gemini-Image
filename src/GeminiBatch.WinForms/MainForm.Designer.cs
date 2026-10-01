@@ -9,7 +9,6 @@ partial class MainForm
     private System.Windows.Forms.TextBox _txtPrompts;
     private System.Windows.Forms.Button _btnLoadPrompts;
     private System.Windows.Forms.Label _lblPromptCount;
-    private System.Windows.Forms.CheckBox _chkUntilLimit;
     private System.Windows.Forms.Label _lblConcurrency;
     private System.Windows.Forms.NumericUpDown _numConcurrency;
     private System.Windows.Forms.Label _lblConcurrencyHint;
@@ -55,7 +54,6 @@ partial class MainForm
         _txtPrompts = new System.Windows.Forms.TextBox();
         _btnLoadPrompts = new System.Windows.Forms.Button();
         _lblPromptCount = new System.Windows.Forms.Label();
-        _chkUntilLimit = new System.Windows.Forms.CheckBox();
         _lblConcurrency = new System.Windows.Forms.Label();
         _numConcurrency = new System.Windows.Forms.NumericUpDown();
         _lblConcurrencyHint = new System.Windows.Forms.Label();
@@ -88,9 +86,9 @@ partial class MainForm
         _lblPromptsHeader.AutoSize = true;
         _lblPromptsHeader.Location = new System.Drawing.Point(12, 9);
         _lblPromptsHeader.Name = "_lblPromptsHeader";
-        _lblPromptsHeader.Size = new System.Drawing.Size(560, 15);
+        _lblPromptsHeader.Size = new System.Drawing.Size(430, 15);
         _lblPromptsHeader.TabIndex = 0;
-        _lblPromptsHeader.Text = "Prompt pool (one per line, # for comments) — each image uses a random prompt, or load a prompts CSV:";
+        _lblPromptsHeader.Text = "Prompts (one per line, # for comments) — one image per prompt, or load a prompts CSV:";
         //
         // _txtPrompts
         //
@@ -123,20 +121,6 @@ partial class MainForm
         _lblPromptCount.Size = new System.Drawing.Size(107, 15);
         _lblPromptCount.TabIndex = 3;
         _lblPromptCount.Text = "No prompts loaded";
-        //
-        // _chkUntilLimit
-        //
-        _chkUntilLimit.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right;
-        _chkUntilLimit.Checked = true;
-        _chkUntilLimit.CheckState = System.Windows.Forms.CheckState.Checked;
-        _chkUntilLimit.Location = new System.Drawing.Point(668, 203);
-        _chkUntilLimit.Name = "_chkUntilLimit";
-        _chkUntilLimit.Size = new System.Drawing.Size(320, 21);
-        _chkUntilLimit.TabIndex = 17;
-        _chkUntilLimit.Text = "Generate until each account's daily limit";
-        _chkUntilLimit.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
-        _chkUntilLimit.UseVisualStyleBackColor = true;
-        _chkUntilLimit.CheckedChanged += OnUntilLimitChanged;
         //
         // _lblConcurrency
         //
@@ -357,7 +341,6 @@ partial class MainForm
         Controls.Add(_lblConcurrencyHint);
         Controls.Add(_numConcurrency);
         Controls.Add(_lblConcurrency);
-        Controls.Add(_chkUntilLimit);
         Controls.Add(_lblPromptCount);
         Controls.Add(_btnLoadPrompts);
         Controls.Add(_txtPrompts);

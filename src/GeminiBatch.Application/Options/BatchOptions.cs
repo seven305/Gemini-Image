@@ -21,26 +21,6 @@ public sealed class BatchOptions
     /// <summary>How many times a worker relaunches a session whose browser died before quarantining its account.</summary>
     public int MaxSessionRestarts { get; set; } = 1;
 
-    /// <summary>
-    /// Images an account generates before its browser closes and the worker moves on to the next unused account
-    /// from the roster. Each account gets one turn per run. 0 = no cap (an account keeps its worker until it is
-    /// quarantined or the queue drains).
-    /// </summary>
-    public int MaxImagesPerAccount { get; set; } = 1;
-
-    /// <summary>
-    /// Every account turn generates an image from a randomly picked prompt (repeats allowed), so the batch is
-    /// eligible accounts × images per account, however many prompts were given. False = each prompt once, in order.
-    /// </summary>
-    public bool RandomizePrompts { get; set; } = true;
-
-    /// <summary>
-    /// Initial state of the UI's "Generate until each account's daily limit" checkbox. On: every account keeps
-    /// generating images from randomly picked prompts until Gemini reports its daily limit, then the worker moves on
-    /// (<see cref="MaxImagesPerAccount"/> is ignored). Off: the planned one-turn-per-account batch.
-    /// </summary>
-    public bool GenerateUntilDailyLimit { get; set; } = true;
-
     public bool StripMetadata { get; set; } = true;
     public bool Headful { get; set; } = true;
 
