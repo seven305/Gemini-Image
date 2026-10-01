@@ -160,7 +160,7 @@ You can type prompts or load a prompts CSV. Use the CSV when you want images sor
 
 ### 3.1 Typing prompts
 
-1. Click in the big box under **Prompts (one per line, # for comments) — or load a prompts CSV:**.
+1. Click in the big box under **Prompt pool (one per line, # for comments) — each image uses a random prompt, or load a prompts CSV:**.
 2. Type or paste one prompt per line.
 3. Lines starting with `#` are ignored. Blank lines are ignored.
 4. The label under the box shows e.g. **3 prompt(s) loaded**.
@@ -181,7 +181,7 @@ Typed prompts get automatic file names (see [5.2](#52-file-names)).
 1. Click **Load prompts CSV…**.
 2. Pick the file.
 3. The prompts appear in the box, and the label shows e.g. **44 prompt(s) loaded from prompts.csv**.
-4. The **Section** column in the grid shows the folder each image goes to.
+4. Each image is saved in its section's folder; once saved, the grid's **Filename** shows it with the folder, e.g. `A\gemini_20260930_142501.jpg`.
 
 **Section format** (the client sheet): the prompt is read from the **`Image Prompt`** column and the folder from the **`Section`** column. Every other column (`#`, `Blend Ratio`, …) is ignored.
 
@@ -216,9 +216,17 @@ Rules:
 
 > **Careful:** if you type anything in the prompt box after loading a CSV, the app switches back to "typed prompts" and **the file names from the CSV are dropped**. To get them back, load the CSV again.
 
-### 3.3 Check the preview
+### 3.3 Check before you start
 
-Before you press **Start**, the grid already lists the images the app plans to make. Each row shows the **Prompt** (hover for the full text), the **Section** (empty = output folder itself), the **Filename** (or **(auto)**), and **Status** = **Pending**. The bottom bar shows **Ready — N image(s) to run**.
+The prompts are a **pool**: an account does not get one fixed prompt, each image it makes picks one at random. So the
+grid does not list anything before **Start** — it shows the images of the current (or last) run. Before you press
+**Start**, check:
+
+- the label under the box, e.g. **44 prompt(s) loaded from prompts.csv**;
+- the bottom bar, e.g. **Ready — 44 prompt(s) in the pool · 10 account(s); each account generates until its daily
+  limit** (or, with the tick box cleared, **Ready — N image(s) to run**).
+
+Editing the prompts after a run leaves that run's rows in the grid; they are cleared when you press **Start**.
 
 ### 3.4 How many images will be made
 
@@ -226,8 +234,8 @@ Before you press **Start**, the grid already lists the images the app plans to m
 
 - Each account keeps making images, **each from a prompt picked at random from your list**, until Gemini says the
   account has reached its daily image limit. Then its window closes and the next account in the CSV takes over.
-- There is no plan up front: the grid shows your prompts before Start, and during the run a new row appears for every
-  image as it is started. The progress bar just moves (the total is not known until the limits are hit).
+- There is no plan up front: the grid is empty when you press Start, and a new row appears for every image as it is
+  started. The progress bar just moves (the total is not known until the limits are hit).
 - The run ends when every account has reached its limit (or was skipped). The summary lists the accounts that reached
   their limit. The last image that was handed on when no account was left shows **Skipped** with *Not generated: every
   account reached its daily limit or was skipped.*
@@ -243,7 +251,8 @@ Before you press **Start**, the grid already lists the images the app plans to m
 
 - **Each account makes one image**, from a prompt picked at random from your list. Prompts can repeat.
 - So **number of images = number of accounts**, no matter how many prompts you give. 5 prompts and 10 accounts → 10 images.
-- The label shows this, e.g. **5 prompt(s) loaded · 10 image(s) planned across the accounts**.
+- The label shows this, e.g. **5 prompt(s) loaded · 10 image(s) planned across the accounts**. The planned images
+  appear in the grid as **Pending** when you press **Start**.
 - The random choice is fixed for the same prompts + same accounts, so re-running the same batch gives the same plan (this is what makes resume work).
 
 If `RandomizePrompts` is `false`, each prompt is made once, in order, and accounts take turns. If there are more prompts than accounts × `MaxImagesPerAccount`, the extra prompts fail with **No accounts left to run this job (all used or quarantined).**
@@ -257,7 +266,8 @@ If `RandomizePrompts` is `false`, each prompt is made once, in order, and accoun
 1. Check prompts, accounts, and **Concurrency:**.
 2. Click **Start**.
 3. If no accounts CSV was chosen yet, pick it now.
-4. The bottom bar shows **Signing in accounts and running N image(s)…**.
+4. The bottom bar shows **Running until each account's daily limit with N browser(s) at a time…** (with the tick box
+   cleared: **Running N image(s) with N browser(s) at a time…**).
 5. Chrome windows open one after another (a few seconds apart). Leave them alone.
 
 If something is missing, a **Cannot start** message explains what to fix (for example, "Enter at least one prompt…"). Nothing pops up after the run has started.
@@ -270,13 +280,16 @@ While running, the prompt box, **Concurrency:**, **Load prompts CSV…**, **Acco
 
 | Column | Meaning |
 |---|---|
-| **Prompt** | The prompt (first 80 characters; hover for all of it) |
-| **Section** | The sub-folder of the output folder the image is saved in (empty = the output folder itself) |
-| **Filename** | Planned name, then the real saved file name once done |
+| **Filename** | The name from the prompts CSV (or **(auto)**), then the saved file once done, shown with its section folder (e.g. `A
+ed_mug.jpg`; no folder = the output folder itself). **Hover** to see the prompt that was used and the full saved path. |
 | **Status** | Where the image is (coloured, see below) |
 | **Account** | The account working on it (the part of the email before `@`) |
 | **Attempts** | Tries so far |
+| **Started** | Time the image was first started |
 | **Error** | Why it failed or was moved (hover for the full text) |
+
+There is no Prompt or Section column: each account works through many prompts picked at random from the pool, so the
+prompt is in the **Filename** tooltip and the section is the folder in front of the file name.
 
 | Status | Colour | Meaning |
 |---|---|---|
@@ -294,8 +307,9 @@ A row that goes back to **Pending** with an error message was moved to another a
 
 ![Status strip](docs/img/status-strip.png)
 
-- Live counts, e.g. **3/10 complete · 0 failed · 2 running · 1 skipped**.
-- A progress bar on the right.
+- Live counts, e.g. **12 generated · 0 failed · 3 running (until daily limits)** (with the tick box cleared:
+  **3/10 complete · 0 failed · 2 running · 1 skipped**).
+- A progress bar on the right. In the daily-limit mode it just moves, because the total is not known in advance.
 - **Resume detected: N already done, skipping** (green) when earlier results were found.
 
 ### 4.4 Stopping safely
@@ -435,7 +449,8 @@ PROMPTS
 
 RUN
   • Set Concurrency (3–5; max = number of accounts) → Start
-  • Default: 1 image per account, random prompt → images = accounts
+  • Default (tick box on): each account makes images until its daily limit, random prompt per image
+  • Tick box off: 1 image per account, random prompt → images = accounts
   • Hands off the Chrome windows · sign-in is automatic, one account at a time
   • Stop → wait for "Stopped" → Start later to resume
 

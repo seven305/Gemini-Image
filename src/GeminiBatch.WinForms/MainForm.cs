@@ -323,7 +323,10 @@ public sealed partial class MainForm : Form
         RefreshPromptPreview();
     }
 
-    /// <summary>Updates the prompt count and shows the jobs Start would run (planned per account once a roster is known).</summary>
+    /// <summary>
+    /// Updates the prompt count and the Ready text. The grid is not a preview: it lists the images of the current/last
+    /// run and is only refilled by Start, so editing the prompt pool after a run keeps that run's results visible.
+    /// </summary>
     private void RefreshPromptPreview()
     {
         if (_busy) return;
@@ -335,11 +338,11 @@ public sealed partial class MainForm : Form
 
         if (_chkUntilLimit.Checked)
         {
-            // Nothing to plan: each image picks a random prompt from this list until the accounts hit their limits.
+            // Nothing to plan: each image picks a random prompt from this pool until the accounts hit their limits.
             _lblPromptCount.Text = count;
-            PopulateGrid(prompts);
+            var accounts = _roster is not null ? $" · {_roster.Count(a => a.Enabled)} account(s)" : string.Empty;
             _lblStatus.Text = prompts.Count == 0 ? "Idle"
-                : "Ready — each account generates images (random prompt each time) until its daily limit";
+                : $"Ready — {prompts.Count} prompt(s) in the pool{accounts}; each account generates until its daily limit";
             return;
         }
 
@@ -348,7 +351,6 @@ public sealed partial class MainForm : Form
             count += $" · {jobs.Count} image(s) planned across the accounts";
 
         _lblPromptCount.Text = count;
-        PopulateGrid(jobs);
         _lblStatus.Text = jobs.Count == 0 ? "Idle" : $"Ready — {jobs.Count} image(s) to run";
     }
 
@@ -476,7 +478,7 @@ public sealed partial class MainForm : Form
         _resumedJobs.Clear();
 
         foreach (var job in jobs)
-            AddRow(job.Id, job.Prompt, job.Section, job.DesiredFileName, job.Status);
+            AddRow(job.Id, job.Prompt, job.DesiredFileName, job.Status);
 
         _grid.ResumeLayout();
         _progress.Maximum = Math.Max(1, jobs.Count);
@@ -484,12 +486,16 @@ public sealed partial class MainForm : Form
         _lblResume.Visible = false;
     }
 
-    private DataGridViewRow AddRow(Guid id, string prompt, string? section, string? desiredFileName, JobStatus status)
+    /// <summary>
+    /// One row per image. An account cycles through many prompts, so the prompt is not a column: it is the Filename
+    /// cell's tooltip, and the saved name (shown relative to the output folder) carries the section folder.
+    /// </summary>
+    private DataGridViewRow AddRow(Guid id, string prompt, string? desiredFileName, JobStatus status)
     {
-        var index = _grid.Rows.Add(Preview(prompt), section ?? string.Empty, desiredFileName ?? "(auto)", status.ToString(), string.Empty, "0", string.Empty);
+        var index = _grid.Rows.Add(desiredFileName ?? "(auto)", status.ToString(), string.Empty, "0", string.Empty, string.Empty);
         var row = _grid.Rows[index];
         row.Tag = id;
-        row.Cells["Prompt"].ToolTipText = prompt;
+        row.Cells["Filename"].ToolTipText = "Prompt: " + prompt;
         _rowsByJob[id] = row;
         _statusByJob[id] = status;
         return row;
@@ -502,7 +508,7 @@ public sealed partial class MainForm : Form
         {
             // The until-limit mode creates jobs while it runs: the first update of a job adds its row.
             if (!_busy || !_untilLimitRun) return;
-            row = AddRow(update.Id, update.Prompt, update.Section, update.DesiredFileName, update.Status);
+            row = AddRow(update.Id, update.Prompt, update.DesiredFileName, update.Status);
             try { _grid.FirstDisplayedScrollingRowIndex = row.Index; }
             catch (InvalidOperationException) { } // grid too small to scroll (e.g. minimized); cosmetic only
         }
@@ -513,7 +519,16 @@ public sealed partial class MainForm : Form
             _resumedJobs.Add(update.Id);
 
         if (update.SavedPath is not null)
-            row.Cells["Filename"].Value = Path.GetFileName(update.SavedPath);
+        {
+            // Relative to the output folder, so the section sub-folder shows (e.g. A\red_mug.jpg).
+            var filenameCell = row.Cells["Filename"];
+            filenameCell.Value = Path.GetRelativePath(_output.Root, update.SavedPath);
+            if (!filenameCell.ToolTipText.Contains(update.SavedPath, StringComparison.OrdinalIgnoreCase))
+                filenameCell.ToolTipText += Environment.NewLine + "Saved: " + update.SavedPath;
+        }
+
+        if (update.Status == JobStatus.Running && row.Cells["Started"].Value is null or "")
+            row.Cells["Started"].Value = DateTime.Now.ToString("HH:mm:ss");
 
         row.Cells["Status"].Value = update.Status.ToString();
         row.Cells["Account"].Value = update.AccountId ?? string.Empty;
@@ -578,6 +593,4 @@ public sealed partial class MainForm : Form
         JobStatus.Skipped => SkippedColor,
         _ => SystemColors.Window,
     };
-
-    private static string Preview(string prompt) => prompt.Length <= 80 ? prompt : prompt[..80] + "…";
 }

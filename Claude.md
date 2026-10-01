@@ -88,7 +88,7 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   prompt whenever a worker needs one (next `Occurrence` whose key is free in the manifest), `MaxImagesPerAccount` is
   ignored, each account runs until its limit/quarantine, and the run ends when every account has had its turn (the job
   handed on by the last account is `Skipped`). Each new job is reported Pending first; `JobUpdate` carries
-  Prompt/Section/DesiredFileName so the grid adds the row. Unchecked = the planned one-turn-per-account `RunAsync` path.
+  Prompt/Section/DesiredFileName so the grid adds the row (Prompt feeds the Filename tooltip). Unchecked = the planned one-turn-per-account `RunAsync` path.
   `Fake:DailyLimitAfterImages` (0 = never; appsettings sets 5) makes fake sessions hit the limit.
 - Phase 4 (operator UI): code complete. Prompts come from the text box or **Load prompts CSV…** (client layout
   `Image Prompt` + `Section`, other columns ignored; or legacy `Filename | Prompt`; delimiter picked from the header line,
@@ -96,8 +96,10 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   Each image is saved in `<output>\<Section>\` (`IImageStorage.SaveAsync(..., subfolder, ...)`, sanitized to one folder
   name); a Section prefixes the `ManifestKey` (`A/<key>`). The output folder is runtime state (`OutputLocation`
   singleton, default `Batch:OutputFolder`), picked with **Browse…** and remembered in
-  `%LOCALAPPDATA%\GeminiBatch\ui-settings.json`; the manifest is always `<output>\manifest.json` (no `ManifestPath`); the grid previews the planned jobs
-  before Start. Concurrency is capped at the enabled-account count. Live grid (`BufferedDataGridView`, double-buffered,
+  `%LOCALAPPDATA%\GeminiBatch\ui-settings.json`; the manifest is always `<output>\manifest.json` (no `ManifestPath`); the grid is empty until
+  Start (no preview: an account cycles through the prompt pool) and has one row per image — Filename (desired name, then
+  the saved path relative to the output folder, so the Section folder shows; the job's prompt is the cell tooltip), Status,
+  Account, Attempts, Started, Error; no Prompt/Section columns. Editing prompts leaves the last run's rows until Start. Concurrency is capped at the enabled-account count. Live grid (`BufferedDataGridView`, double-buffered,
   per-row update, colored Status cell, Error column), StatusStrip counts + progress bar, "Resume detected" note
   (manifest skips = `Skipped` with no error), **Open output folder**, and a non-modal last-run summary box
   (quarantined accounts + reasons). No modal after Start; validation messages only on the Start click.

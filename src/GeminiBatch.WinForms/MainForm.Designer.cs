@@ -21,12 +21,11 @@ partial class MainForm
     private System.Windows.Forms.TextBox _txtOutputFolder;
     private System.Windows.Forms.Button _btnBrowseOutput;
     private GeminiBatch.WinForms.BufferedDataGridView _grid;
-    private System.Windows.Forms.DataGridViewTextBoxColumn _colPrompt;
-    private System.Windows.Forms.DataGridViewTextBoxColumn _colSection;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colFilename;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colStatus;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colAccount;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colAttempts;
+    private System.Windows.Forms.DataGridViewTextBoxColumn _colStarted;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colError;
     private System.Windows.Forms.TextBox _txtRunSummary;
     private System.Windows.Forms.StatusStrip _statusStrip;
@@ -68,12 +67,11 @@ partial class MainForm
         _txtOutputFolder = new System.Windows.Forms.TextBox();
         _btnBrowseOutput = new System.Windows.Forms.Button();
         _grid = new GeminiBatch.WinForms.BufferedDataGridView();
-        _colPrompt = new System.Windows.Forms.DataGridViewTextBoxColumn();
-        _colSection = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colFilename = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colStatus = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colAccount = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colAttempts = new System.Windows.Forms.DataGridViewTextBoxColumn();
+        _colStarted = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colError = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _txtRunSummary = new System.Windows.Forms.TextBox();
         _statusStrip = new System.Windows.Forms.StatusStrip();
@@ -90,9 +88,9 @@ partial class MainForm
         _lblPromptsHeader.AutoSize = true;
         _lblPromptsHeader.Location = new System.Drawing.Point(12, 9);
         _lblPromptsHeader.Name = "_lblPromptsHeader";
-        _lblPromptsHeader.Size = new System.Drawing.Size(240, 15);
+        _lblPromptsHeader.Size = new System.Drawing.Size(560, 15);
         _lblPromptsHeader.TabIndex = 0;
-        _lblPromptsHeader.Text = "Prompts (one per line, # for comments) — or load a prompts CSV:";
+        _lblPromptsHeader.Text = "Prompt pool (one per line, # for comments) — each image uses a random prompt, or load a prompts CSV:";
         //
         // _txtPrompts
         //
@@ -250,7 +248,7 @@ partial class MainForm
         _grid.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right;
         _grid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
         _grid.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
-        _grid.Columns.AddRange(new System.Windows.Forms.DataGridViewColumn[] { _colPrompt, _colSection, _colFilename, _colStatus, _colAccount, _colAttempts, _colError });
+        _grid.Columns.AddRange(new System.Windows.Forms.DataGridViewColumn[] { _colFilename, _colStatus, _colAccount, _colAttempts, _colStarted, _colError });
         _grid.Location = new System.Drawing.Point(12, 316);
         _grid.MultiSelect = false;
         _grid.Name = "_grid";
@@ -260,23 +258,9 @@ partial class MainForm
         _grid.Size = new System.Drawing.Size(976, 192);
         _grid.TabIndex = 13;
         //
-        // _colPrompt
-        //
-        _colPrompt.FillWeight = 26F;
-        _colPrompt.HeaderText = "Prompt";
-        _colPrompt.Name = "Prompt";
-        _colPrompt.ReadOnly = true;
-        //
-        // _colSection
-        //
-        _colSection.FillWeight = 6F;
-        _colSection.HeaderText = "Section";
-        _colSection.Name = "Section";
-        _colSection.ReadOnly = true;
-        //
         // _colFilename
         //
-        _colFilename.FillWeight = 18F;
+        _colFilename.FillWeight = 28F;
         _colFilename.HeaderText = "Filename";
         _colFilename.Name = "Filename";
         _colFilename.ReadOnly = true;
@@ -290,7 +274,7 @@ partial class MainForm
         //
         // _colAccount
         //
-        _colAccount.FillWeight = 14F;
+        _colAccount.FillWeight = 18F;
         _colAccount.HeaderText = "Account";
         _colAccount.Name = "Account";
         _colAccount.ReadOnly = true;
@@ -302,9 +286,16 @@ partial class MainForm
         _colAttempts.Name = "Attempts";
         _colAttempts.ReadOnly = true;
         //
+        // _colStarted
+        //
+        _colStarted.FillWeight = 9F;
+        _colStarted.HeaderText = "Started";
+        _colStarted.Name = "Started";
+        _colStarted.ReadOnly = true;
+        //
         // _colError
         //
-        _colError.FillWeight = 19F;
+        _colError.FillWeight = 28F;
         _colError.HeaderText = "Error";
         _colError.Name = "Error";
         _colError.ReadOnly = true;
