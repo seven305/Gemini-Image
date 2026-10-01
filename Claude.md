@@ -62,7 +62,9 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   Built: `GeminiSelectors`, `PlaywrightGeminiSession(+Factory)`, `PlaywrightBrowserLauncher`,
   `GoogleSignInDriver` + `GoogleSignInGate` (automated sign-in from CSV credentials incl. TOTP via
   `TotpGenerator`; once per session, one account at a time), `AccountUnavailableException`,
-  `Batch:UseFakeSession` switch, failure diagnostics (screenshot + ARIA snapshot).
+  `Batch:UseFakeSession` switch, failure diagnostics (screenshot + ARIA snapshot). Google's post-sign-in nags
+  (`gds.google.com/web/*` e.g. recovery options, `myaccount.google.com/verification/selfie/*`) are skipped by reopening
+  `/app` (`GeminiSelectors.IsPostSignInPrompt`), a bounded number of times.
   Verified so far: DI both ways, Chrome launch, signed-out detection, 25 unit tests.
 - Phase 3 (concurrency & resilience): code complete, awaiting the 5-account live milestone run.
   `BatchProcessor`: unbounded queue filled up front; an `AccountUnavailableException` is terminal for the

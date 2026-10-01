@@ -90,7 +90,7 @@ You do **not** log in by hand. For each account, when its turn comes:
 
 1. A Chrome window opens using that account's own saved profile.
 2. If the profile is still signed in, Gemini opens straight away.
-3. If it is signed out, the app signs in using the CSV: email → password → authenticator code (made from the 2FA key) or recovery email confirmation. It also clicks past the account chooser and Google's "after sign-in" prompts (such as "add recovery options").
+3. If it is signed out, the app signs in using the CSV: email → password → authenticator code (made from the 2FA key) or recovery email confirmation. It also clicks past the account chooser and Google's "after sign-in" prompts (such as "add recovery options" or the "verify with a selfie" page — these are skipped and Gemini is opened).
 4. Only **one account signs in at a time** across the whole app. Other accounts wait their turn. This is on purpose — many sign-ins at once from one machine look suspicious to Google.
 
 ![Google sign-in page](docs/img/sign-in-browser.png)

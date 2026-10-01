@@ -31,6 +31,17 @@ public static class GeminiSelectors
     /// <summary>Host of Google's post-sign-in prompts (recovery options, home address, security checkup…).</summary>
     public const string PostSignInPromptHost = "gds.google.com";
 
+    /// <summary>
+    /// Google's post-sign-in "verify it's you with a selfie" pre-collection page. Optional at this stage: the account is
+    /// signed in and the page is skipped by opening <see cref="AppUrl"/>.
+    /// </summary>
+    public const string SelfieVerificationPromptUrl = "https://myaccount.google.com/verification/selfie/precollection";
+
+    /// <summary>Host of <see cref="SelfieVerificationPromptUrl"/>; only its <see cref="SelfieVerificationPathPrefix"/> pages are skipped.</summary>
+    public const string MyAccountHost = "myaccount.google.com";
+
+    public const string SelfieVerificationPathPrefix = "/verification/selfie/";
+
     /// <summary>Google session cookies; at least one must be present on the Gemini origin when signed in.</summary>
     public static readonly string[] SessionCookieNames = ["SID", "__Secure-1PSID", "__Secure-3PSID"];
 
@@ -164,12 +175,17 @@ public static class GeminiSelectors
 
     /// <summary>
     /// True on one of Google's skippable post-sign-in prompts (<c>gds.google.com/web/…</c>, e.g.
-    /// <see cref="RecoveryOptionsPromptUrl"/>). The account is already signed in there; open Gemini instead.
+    /// <see cref="RecoveryOptionsPromptUrl"/>, or the selfie pre-collection page <see cref="SelfieVerificationPromptUrl"/>).
+    /// The account is already signed in there; open Gemini instead.
     /// </summary>
     public static bool IsPostSignInPrompt(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri)
-        && string.Equals(uri.Host, PostSignInPromptHost, StringComparison.OrdinalIgnoreCase)
-        && uri.AbsolutePath.StartsWith("/web/", StringComparison.OrdinalIgnoreCase);
+        && (IsHostPath(uri, PostSignInPromptHost, "/web/")
+            || IsHostPath(uri, MyAccountHost, SelfieVerificationPathPrefix));
+
+    private static bool IsHostPath(Uri uri, string host, string pathPrefix) =>
+        string.Equals(uri.Host, host, StringComparison.OrdinalIgnoreCase)
+        && uri.AbsolutePath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase);
 
     public static bool IsSessionCookie(string cookieName) =>
         Array.IndexOf(SessionCookieNames, cookieName) >= 0;

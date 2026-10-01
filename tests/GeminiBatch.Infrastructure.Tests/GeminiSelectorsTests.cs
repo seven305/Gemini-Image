@@ -65,6 +65,7 @@ public sealed class GeminiSelectorsTests
     [InlineData("https://accounts.google.com/v3/signin/identifier", true)]
     [InlineData("https://gemini.google.com/app", false)]
     [InlineData("https://gds.google.com/web/recoveryoptions", false)] // signed in; handled by IsPostSignInPrompt
+    [InlineData(GeminiSelectors.SelfieVerificationPromptUrl, false)]  // ditto
     public void IsLoginRedirect_detects_the_google_sign_in_host(string url, bool expected)
     {
         Assert.Equal(expected, GeminiSelectors.IsLoginRedirect(url));
@@ -74,6 +75,11 @@ public sealed class GeminiSelectorsTests
     [InlineData(GeminiSelectors.RecoveryOptionsPromptUrl, true)]
     [InlineData("https://gds.google.com/web/recoveryoptions?continue=https%3A%2F%2Fgemini.google.com%2Fapp&hl=en", true)]
     [InlineData("https://GDS.google.com/web/homeaddress", true)]
+    [InlineData(GeminiSelectors.SelfieVerificationPromptUrl, true)]
+    [InlineData("https://myaccount.google.com/verification/selfie/precollection?continue=https%3A%2F%2Fgemini.google.com%2Fapp&hl=en", true)]
+    [InlineData("https://myaccount.google.com/", false)]
+    [InlineData("https://myaccount.google.com/security", false)]
+    [InlineData("https://myaccount.google.com.evil.example/verification/selfie/precollection", false)]
     [InlineData("https://gemini.google.com/app", false)]
     [InlineData("https://accounts.google.com/v3/signin/identifier", false)]
     [InlineData("https://gds.google.com.evil.example/web/recoveryoptions", false)]
