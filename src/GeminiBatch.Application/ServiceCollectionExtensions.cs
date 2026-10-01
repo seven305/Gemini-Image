@@ -8,6 +8,7 @@ public static class ServiceCollectionExtensions
     {
         services.AddSingleton<BatchProcessor>();
         services.AddSingleton<PromptPlanner>();
+        services.AddSingleton<OutputLocation>();
         return services;
     }
 }

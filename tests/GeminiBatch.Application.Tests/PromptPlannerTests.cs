@@ -97,6 +97,23 @@ public sealed class PromptPlannerTests
     }
 
     [Fact]
+    public void Planned_jobs_keep_the_section_and_sections_keep_keys_apart()
+    {
+        var prompts = new[]
+        {
+            new PromptJob { Prompt = "same prompt", Section = "A" },
+            new PromptJob { Prompt = "same prompt", Section = "B" },
+        };
+
+        var jobs = Planner().Plan(prompts, Accounts(6));
+
+        Assert.All(jobs, j => Assert.Contains(j.Section, new[] { "A", "B" }));
+        Assert.All(jobs, j => Assert.StartsWith(j.Section + "/", j.ManifestKey));
+        Assert.Equal(jobs.Count, jobs.Select(j => j.ManifestKey).Distinct().Count());
+        Assert.Equal(new PromptJob { Prompt = "same prompt" }.ManifestKey, prompts[0].ManifestKey["A/".Length..]);
+    }
+
+    [Fact]
     public void First_occurrence_keeps_the_plain_key_later_ones_are_numbered()
     {
         var first = new PromptJob { Prompt = "sunset" };

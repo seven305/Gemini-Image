@@ -25,6 +25,7 @@ public sealed partial class MainForm : Form
     private readonly PromptPlanner _planner = null!;
     private readonly IPromptSource _promptSource = null!;
     private readonly ICsvAccountRoster _csvRoster = null!;
+    private readonly OutputLocation _output = null!;
     private readonly BatchOptions _options = null!;
     private readonly ILogger<MainForm> _logger = null!;
 
@@ -58,6 +59,7 @@ public sealed partial class MainForm : Form
         PromptPlanner planner,
         IPromptSource promptSource,
         ICsvAccountRoster csvRoster,
+        OutputLocation output,
         IOptions<BatchOptions> options,
         ILogger<MainForm> logger)
         : this()
@@ -66,11 +68,22 @@ public sealed partial class MainForm : Form
         _planner = planner;
         _promptSource = promptSource;
         _csvRoster = csvRoster;
+        _output = output;
         _options = options.Value;
         _logger = logger;
 
         _numConcurrency.Value = Math.Clamp(_options.DefaultConcurrency, 1, (int)_numConcurrency.Maximum);
-        _txtOutputFolder.Text = TryGetOutputFolder(out var folder, out _) ? folder : "(not set — configure Batch:OutputFolder)";
+
+        // The folder picked with Browse… last time wins over Batch:OutputFolder.
+        if (UiSettings.Load().OutputFolder is { Length: > 0 } saved)
+        {
+            try { _output.Root = saved; }
+            catch (Exception ex) when (ex is ArgumentException or IOException or NotSupportedException)
+            {
+                _logger.LogWarning(ex, "Ignoring the saved output folder {Folder}", saved);
+            }
+        }
+        ShowOutputFolder();
     }
 
     // ---- Event handlers (wired in the designer) ---------------------------------------------
@@ -80,6 +93,7 @@ public sealed partial class MainForm : Form
     private void OnLoadCsvClick(object? sender, EventArgs e) => LoadCsv();
     private void OnLoadPromptsClick(object? sender, EventArgs e) => LoadPromptsCsv();
     private void OnOpenOutputClick(object? sender, EventArgs e) => OpenOutputFolder();
+    private void OnBrowseOutputClick(object? sender, EventArgs e) => BrowseOutputFolder();
     private void OnFormClosed(object? sender, FormClosedEventArgs e) => _cts?.Cancel();
 
     private void OnPromptsTextChanged(object? sender, EventArgs e)
@@ -191,6 +205,7 @@ public sealed partial class MainForm : Form
         _numConcurrency.Enabled = !running;
         _btnLoadCsv.Enabled = !running;
         _btnLoadPrompts.Enabled = !running;
+        _btnBrowseOutput.Enabled = !running;
     }
 
     /// <summary>End-of-run summary, shown in the status strip and the summary box — never a modal, so an unattended run is not held up.</summary>
@@ -230,14 +245,17 @@ public sealed partial class MainForm : Form
             RefreshPromptPreview();
     }
 
-    /// <summary>Loads a prompts CSV (<c>filename</c> + <c>prompt</c> columns, comma or '|' delimited) as the prompt source.</summary>
+    /// <summary>
+    /// Loads a prompts CSV as the prompt source: <c>Image Prompt</c> + <c>Section</c> columns (each image is saved in its
+    /// section's sub-folder), or the older <c>filename</c> + <c>prompt</c> layout; comma or '|' delimited.
+    /// </summary>
     private void LoadPromptsCsv()
     {
         if (_busy) return;
 
         using var dialog = new OpenFileDialog
         {
-            Title = "Select prompts CSV (Filename | Prompt, or filename,prompt)",
+            Title = "Select prompts CSV (Section + Image Prompt columns, or filename,prompt)",
             Filter = "CSV files (*.csv)|*.csv|Text files (*.txt)|*.txt|All files (*.*)|*.*",
             CheckFileExists = true,
         };
@@ -346,25 +364,43 @@ public sealed partial class MainForm : Form
 
     private bool TryGetOutputFolder(out string folder, out string error)
     {
-        folder = string.Empty;
+        folder = _output.Root;
         error = string.Empty;
-        if (string.IsNullOrWhiteSpace(_options.OutputFolder))
-        {
-            error = "Batch:OutputFolder is not set in appsettings.json.";
-            return false;
-        }
-
         try
         {
-            folder = Path.GetFullPath(_options.OutputFolder);
             Directory.CreateDirectory(folder);
             return true;
         }
         catch (Exception ex)
         {
-            error = $"{_options.OutputFolder}: {ex.Message}";
+            error = $"{folder}: {ex.Message}";
             return false;
         }
+    }
+
+    private void ShowOutputFolder() => _txtOutputFolder.Text = _output.Root;
+
+    /// <summary>Lets the operator pick the output folder (section sub-folders and the resume manifest go inside it) and remembers it.</summary>
+    private void BrowseOutputFolder()
+    {
+        if (_busy) return;
+
+        using var dialog = new FolderBrowserDialog
+        {
+            Description = "Select the output folder (images are saved in a sub-folder per Section)",
+            UseDescriptionForTitle = true,
+            InitialDirectory = Directory.Exists(_output.Root) ? _output.Root : string.Empty,
+            ShowNewFolderButton = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.SelectedPath)) return;
+
+        _output.Root = dialog.SelectedPath;
+        ShowOutputFolder();
+        var settings = UiSettings.Load();
+        settings.OutputFolder = _output.Root;
+        _lblStatus.Text = settings.TrySave()
+            ? $"Output folder: {_output.Root}"
+            : $"Output folder: {_output.Root} (could not be remembered for next launch)";
     }
 
     private void OpenOutputFolder()
@@ -402,7 +438,7 @@ public sealed partial class MainForm : Form
 
         foreach (var job in jobs)
         {
-            var index = _grid.Rows.Add(Preview(job.Prompt), job.DesiredFileName ?? "(auto)", job.Status.ToString(), string.Empty, "0", string.Empty);
+            var index = _grid.Rows.Add(Preview(job.Prompt), job.Section ?? string.Empty, job.DesiredFileName ?? "(auto)", job.Status.ToString(), string.Empty, "0", string.Empty);
             var row = _grid.Rows[index];
             row.Tag = job.Id;
             row.Cells["Prompt"].ToolTipText = job.Prompt;

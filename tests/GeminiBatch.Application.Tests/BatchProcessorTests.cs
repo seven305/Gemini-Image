@@ -225,6 +225,23 @@ public sealed class BatchProcessorTests
     }
 
     [Fact]
+    public async Task Job_section_is_passed_to_storage_as_the_subfolder()
+    {
+        var storage = new RecordingStorage();
+        var jobs = new[]
+        {
+            new PromptJob { Prompt = "cash on a table", Section = "A" },
+            new PromptJob { Prompt = "no section" },
+        };
+
+        var result = await Build(new ScriptedSessionFactory(), FastOptions(o => o.MaxImagesPerAccount = 0), storage: storage)
+            .RunAsync(jobs, [Account("a")], 1, new CapturingProgress(), CancellationToken.None);
+
+        AssertCounts(result, 2, 2, 0, 0);
+        Assert.Equal(new string?[] { "A", null }, storage.Calls.Select(c => c.Subfolder).ToArray());
+    }
+
+    [Fact]
     public async Task StripMetadata_false_skips_the_image_processor()
     {
         var processor = new RecordingProcessor();
@@ -592,7 +609,7 @@ public sealed class BatchProcessorTests
         public string? BaseName { get; private set; }
         public string? TempPath { get; private set; }
 
-        public Task<string> SaveAsync(string tempFilePath, string? desiredBaseName, CancellationToken ct)
+        public Task<string> SaveAsync(string tempFilePath, string? desiredBaseName, string? subfolder, CancellationToken ct)
         {
             order.Add("storage");
             BaseName = desiredBaseName;

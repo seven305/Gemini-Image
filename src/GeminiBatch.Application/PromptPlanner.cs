@@ -40,6 +40,7 @@ public sealed class PromptPlanner
             {
                 Prompt = template.Prompt,
                 DesiredFileName = template.DesiredFileName,
+                Section = template.Section,
                 Occurrence = occurrence,
             });
         }
@@ -49,7 +50,7 @@ public sealed class PromptPlanner
     /// <summary>Stable across processes (string.GetHashCode is not): FNV-1a over the prompts and the account emails.</summary>
     private static int Seed(IReadOnlyList<PromptJob> prompts, IReadOnlyList<GeminiAccount> accounts)
     {
-        var material = string.Join('\n', prompts.Select(p => $"{p.DesiredFileName}|{p.Prompt}"))
+        var material = string.Join('\n', prompts.Select(p => $"{p.Section}|{p.DesiredFileName}|{p.Prompt}"))
             + "\n--\n" + string.Join('\n', accounts.Select(a => a.Email.Trim().ToLowerInvariant()));
         var hash = Convert.ToUInt64(ManifestKeys.FromPrompt(material), 16);
         return (int)(hash ^ (hash >> 32));

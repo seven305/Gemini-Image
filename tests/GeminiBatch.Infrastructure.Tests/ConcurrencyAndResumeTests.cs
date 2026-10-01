@@ -24,7 +24,6 @@ public sealed class ConcurrencyAndResumeTests : IDisposable
     private IOptions<BatchOptions> BatchOptions() => Options.Create(new BatchOptions
     {
         OutputFolder = OutputDir,
-        ManifestPath = Path.Combine(OutputDir, "manifest.json"),
         MaxRetriesPerJob = 1,
         RetryBaseDelaySeconds = 0,
         MinInterPromptDelayMs = 0,
@@ -33,6 +32,8 @@ public sealed class ConcurrencyAndResumeTests : IDisposable
         MaxImagesPerAccount = 0, // 3 fake accounts finish all 20 jobs; rotation is covered in the Application tests
         StripMetadata = false,
     });
+
+    private OutputLocation Location() => new(BatchOptions());
 
     private string TempImage()
     {
@@ -45,13 +46,13 @@ public sealed class ConcurrencyAndResumeTests : IDisposable
     [Fact]
     public async Task Parallel_saves_with_one_name_never_collide_or_overwrite()
     {
-        var storage = new FileSystemImageStorage(BatchOptions());
+        var storage = new FileSystemImageStorage(Location());
         Directory.CreateDirectory(OutputDir);
         var existing = Path.Combine(OutputDir, "cat.png");
         await File.WriteAllTextAsync(existing, "pre-existing");
 
         var temps = Enumerable.Range(0, 50).Select(_ => TempImage()).ToList();
-        var saved = await Task.WhenAll(temps.Select(t => Task.Run(() => storage.SaveAsync(t, "cat", CancellationToken.None))));
+        var saved = await Task.WhenAll(temps.Select(t => Task.Run(() => storage.SaveAsync(t, "cat", null, CancellationToken.None))));
 
         Assert.Equal(50, saved.Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.DoesNotContain(existing, saved, StringComparer.OrdinalIgnoreCase);
@@ -61,15 +62,45 @@ public sealed class ConcurrencyAndResumeTests : IDisposable
     }
 
     [Fact]
+    public async Task Section_saves_into_a_subfolder_that_cannot_escape_the_output_folder()
+    {
+        var storage = new FileSystemImageStorage(Location());
+
+        var inSection = await storage.SaveAsync(TempImage(), "img", "A", CancellationToken.None);
+        var traversal = await storage.SaveAsync(TempImage(), "img", "..", CancellationToken.None);
+        var nested = await storage.SaveAsync(TempImage(), "img", @"..\a/b", CancellationToken.None);
+
+        Assert.Equal(Path.Combine(OutputDir, "A", "img.png"), inSection);
+        Assert.Equal(Path.Combine(OutputDir, "img.png"), traversal);
+        Assert.Equal(OutputDir, Path.GetDirectoryName(Path.GetDirectoryName(nested)));
+        Assert.Equal("a_b", Path.GetFileName(Path.GetDirectoryName(nested)));
+    }
+
+    [Fact]
+    public async Task Manifest_follows_the_output_folder_chosen_between_runs()
+    {
+        var location = Location();
+        var manifest = new JsonJobManifest(location);
+        await manifest.LoadAsync(CancellationToken.None);
+        await manifest.MarkCompletedAsync("key", "file.png", CancellationToken.None);
+
+        location.Root = Path.Combine(_dir, "other");
+        await manifest.LoadAsync(CancellationToken.None);
+
+        Assert.False(manifest.IsCompleted("key"));
+        Assert.True(File.Exists(Path.Combine(OutputDir, OutputLocation.ManifestFileName)));
+    }
+
+    [Fact]
     public async Task Concurrent_manifest_writes_are_all_persisted()
     {
-        var manifest = new JsonJobManifest(BatchOptions());
+        var manifest = new JsonJobManifest(Location());
         await manifest.LoadAsync(CancellationToken.None);
 
         await Task.WhenAll(Enumerable.Range(0, 40).Select(i =>
             Task.Run(() => manifest.MarkCompletedAsync($"key{i}", $"file{i}.png", CancellationToken.None))));
 
-        var reloaded = new JsonJobManifest(BatchOptions());
+        var reloaded = new JsonJobManifest(Location());
         await reloaded.LoadAsync(CancellationToken.None);
         Assert.All(Enumerable.Range(0, 40), i => Assert.True(reloaded.IsCompleted($"key{i}")));
     }
@@ -117,16 +148,16 @@ public sealed class ConcurrencyAndResumeTests : IDisposable
         var fake = Options.Create(new FakeSessionOptions { MinDelayMs = 5, MaxDelayMs = 25 });
         return new BatchProcessor(
             new FakeGeminiSessionFactory(fake, NullLoggerFactory.Instance),
-            new FileSystemImageStorage(options),
+            new FileSystemImageStorage(Location()),
             new NullImageProcessor(),
-            new JsonJobManifest(options),
+            new JsonJobManifest(Location()),
             options,
             NullLogger<BatchProcessor>.Instance);
     }
 
     private async Task<HashSet<string>> ReadManifestKeysAsync()
     {
-        var manifest = new JsonJobManifest(BatchOptions());
+        var manifest = new JsonJobManifest(Location());
         await manifest.LoadAsync(CancellationToken.None);
         return Enumerable.Range(1, 20).Select(i => $"img{i}").Where(manifest.IsCompleted).ToHashSet();
     }

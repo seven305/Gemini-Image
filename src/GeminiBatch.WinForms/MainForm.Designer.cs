@@ -18,8 +18,10 @@ partial class MainForm
     private System.Windows.Forms.Label _lblAccounts;
     private System.Windows.Forms.Button _btnOpenOutput;
     private System.Windows.Forms.TextBox _txtOutputFolder;
+    private System.Windows.Forms.Button _btnBrowseOutput;
     private GeminiBatch.WinForms.BufferedDataGridView _grid;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colPrompt;
+    private System.Windows.Forms.DataGridViewTextBoxColumn _colSection;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colFilename;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colStatus;
     private System.Windows.Forms.DataGridViewTextBoxColumn _colAccount;
@@ -62,8 +64,10 @@ partial class MainForm
         _lblAccounts = new System.Windows.Forms.Label();
         _btnOpenOutput = new System.Windows.Forms.Button();
         _txtOutputFolder = new System.Windows.Forms.TextBox();
+        _btnBrowseOutput = new System.Windows.Forms.Button();
         _grid = new GeminiBatch.WinForms.BufferedDataGridView();
         _colPrompt = new System.Windows.Forms.DataGridViewTextBoxColumn();
+        _colSection = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colFilename = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colStatus = new System.Windows.Forms.DataGridViewTextBoxColumn();
         _colAccount = new System.Windows.Forms.DataGridViewTextBoxColumn();
@@ -206,9 +210,20 @@ partial class MainForm
         _txtOutputFolder.Location = new System.Drawing.Point(168, 282);
         _txtOutputFolder.Name = "_txtOutputFolder";
         _txtOutputFolder.ReadOnly = true;
-        _txtOutputFolder.Size = new System.Drawing.Size(820, 23);
+        _txtOutputFolder.Size = new System.Drawing.Size(730, 23);
         _txtOutputFolder.TabIndex = 12;
         _txtOutputFolder.TabStop = false;
+        //
+        // _btnBrowseOutput
+        //
+        _btnBrowseOutput.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Right;
+        _btnBrowseOutput.Location = new System.Drawing.Point(904, 278);
+        _btnBrowseOutput.Name = "_btnBrowseOutput";
+        _btnBrowseOutput.Size = new System.Drawing.Size(84, 30);
+        _btnBrowseOutput.TabIndex = 16;
+        _btnBrowseOutput.Text = "Browse…";
+        _btnBrowseOutput.UseVisualStyleBackColor = true;
+        _btnBrowseOutput.Click += OnBrowseOutputClick;
         //
         // _grid
         //
@@ -219,7 +234,7 @@ partial class MainForm
         _grid.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left | System.Windows.Forms.AnchorStyles.Right;
         _grid.AutoSizeColumnsMode = System.Windows.Forms.DataGridViewAutoSizeColumnsMode.Fill;
         _grid.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
-        _grid.Columns.AddRange(new System.Windows.Forms.DataGridViewColumn[] { _colPrompt, _colFilename, _colStatus, _colAccount, _colAttempts, _colError });
+        _grid.Columns.AddRange(new System.Windows.Forms.DataGridViewColumn[] { _colPrompt, _colSection, _colFilename, _colStatus, _colAccount, _colAttempts, _colError });
         _grid.Location = new System.Drawing.Point(12, 316);
         _grid.MultiSelect = false;
         _grid.Name = "_grid";
@@ -231,10 +246,17 @@ partial class MainForm
         //
         // _colPrompt
         //
-        _colPrompt.FillWeight = 32F;
+        _colPrompt.FillWeight = 26F;
         _colPrompt.HeaderText = "Prompt";
         _colPrompt.Name = "Prompt";
         _colPrompt.ReadOnly = true;
+        //
+        // _colSection
+        //
+        _colSection.FillWeight = 6F;
+        _colSection.HeaderText = "Section";
+        _colSection.Name = "Section";
+        _colSection.ReadOnly = true;
         //
         // _colFilename
         //
@@ -318,6 +340,7 @@ partial class MainForm
         ClientSize = new System.Drawing.Size(1000, 620);
         Controls.Add(_txtRunSummary);
         Controls.Add(_grid);
+        Controls.Add(_btnBrowseOutput);
         Controls.Add(_txtOutputFolder);
         Controls.Add(_btnOpenOutput);
         Controls.Add(_lblAccounts);

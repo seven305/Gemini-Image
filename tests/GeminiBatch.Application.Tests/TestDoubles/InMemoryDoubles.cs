@@ -6,11 +6,11 @@ namespace GeminiBatch.Application.Tests.TestDoubles;
 
 public sealed class RecordingStorage : IImageStorage
 {
-    public ConcurrentQueue<(string Temp, string? BaseName)> Calls { get; } = new();
+    public ConcurrentQueue<(string Temp, string? BaseName, string? Subfolder)> Calls { get; } = new();
 
-    public Task<string> SaveAsync(string tempFilePath, string? desiredBaseName, CancellationToken ct)
+    public Task<string> SaveAsync(string tempFilePath, string? desiredBaseName, string? subfolder, CancellationToken ct)
     {
-        Calls.Enqueue((tempFilePath, desiredBaseName));
+        Calls.Enqueue((tempFilePath, desiredBaseName, subfolder));
         if (File.Exists(tempFilePath)) File.Delete(tempFilePath);
         return Task.FromResult(Path.Combine("out", $"{desiredBaseName ?? "image"}.png"));
     }

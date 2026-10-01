@@ -8,6 +8,9 @@ namespace GeminiBatch.Infrastructure.Prompts;
 
 public sealed class TextPromptSource : IPromptSource
 {
+    private const string ImagePromptColumn = "image prompt";
+    private const string PromptColumn = "prompt";
+
     public IReadOnlyList<PromptJob> FromLines(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return [];
@@ -29,25 +32,33 @@ public sealed class TextPromptSource : IPromptSource
             Delimiter = DetectDelimiter(path),
         };
 
-        using var reader = new StreamReader(path);
+        using var reader = OpenShared(path);
         using var csv = new CsvReader(reader, config);
 
         var jobs = new List<PromptJob>();
         csv.Read();
         csv.ReadHeader();
-        if (csv.HeaderRecord is null || !csv.HeaderRecord.Any(h => string.Equals(h.Trim(), "prompt", StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidDataException("CSV must have a 'prompt' column.");
+
+        // "Image Prompt" + "Section" (the client layout; other columns such as "#" are ignored), or the older
+        // "prompt" + optional "filename" layout.
+        var headers = csv.HeaderRecord?.Select(h => h.Trim().ToLowerInvariant()).ToHashSet() ?? [];
+        var promptColumn = headers.Contains(ImagePromptColumn) ? ImagePromptColumn
+            : headers.Contains(PromptColumn) ? PromptColumn
+            : throw new InvalidDataException("CSV must have an 'Image Prompt' column.");
+        var readFileName = promptColumn == PromptColumn;
 
         while (csv.Read())
         {
-            var prompt = csv.GetField("prompt");
+            var prompt = csv.GetField(promptColumn);
             if (string.IsNullOrWhiteSpace(prompt)) continue;
 
-            var fileName = csv.TryGetField<string>("filename", out var f) ? f : null;
+            var fileName = readFileName && csv.TryGetField<string>("filename", out var f) ? f : null;
+            var section = csv.TryGetField<string>("section", out var s) ? s : null;
             jobs.Add(new PromptJob
             {
                 Prompt = prompt.Trim(),
                 DesiredFileName = string.IsNullOrWhiteSpace(fileName) ? null : fileName.Trim(),
+                Section = string.IsNullOrWhiteSpace(section) ? null : section.Trim(),
             });
         }
 
@@ -60,7 +71,12 @@ public sealed class TextPromptSource : IPromptSource
     /// </summary>
     private static string DetectDelimiter(string path)
     {
-        var header = File.ReadLines(path).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? string.Empty;
+        string? header;
+        using (var reader = OpenShared(path))
+        {
+            while ((header = reader.ReadLine()) is not null && string.IsNullOrWhiteSpace(header)) { }
+        }
+        header ??= string.Empty;
         foreach (var candidate in new[] { "|", "	", ";" })
         {
             if (header.Contains(candidate, StringComparison.Ordinal))
@@ -68,4 +84,8 @@ public sealed class TextPromptSource : IPromptSource
         }
         return ",";
     }
+
+    /// <summary>FileShare.ReadWrite so a CSV left open in Excel (an exclusive-ish lock) can still be read.</summary>
+    private static StreamReader OpenShared(string path) =>
+        new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite));
 }

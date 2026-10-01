@@ -78,8 +78,13 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   picked prompt, repeats allowed; `PromptJob.Occurrence` makes repeated prompts' keys unique (`key#2`…). The seed is
   derived from prompts + account emails, so re-planning the same batch resumes exactly. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
   `Fake:UnavailableAccountIds` / `SessionLostAccountIds` / `AccountLossAfterCalls` reproduce the failure paths offline.
-- Phase 4 (operator UI): code complete. Prompts come from the text box or **Load prompts CSV…** (`Filename | Prompt`
-  or comma; delimiter picked from the header line, filenames -> `DesiredFileName`); the grid previews the planned jobs
+- Phase 4 (operator UI): code complete. Prompts come from the text box or **Load prompts CSV…** (client layout
+  `Image Prompt` + `Section`, other columns ignored; or legacy `Filename | Prompt`; delimiter picked from the header line,
+  filenames -> `DesiredFileName`, Section -> `PromptJob.Section`; opened FileShare.ReadWrite so Excel can hold it).
+  Each image is saved in `<output>\<Section>\` (`IImageStorage.SaveAsync(..., subfolder, ...)`, sanitized to one folder
+  name); a Section prefixes the `ManifestKey` (`A/<key>`). The output folder is runtime state (`OutputLocation`
+  singleton, default `Batch:OutputFolder`), picked with **Browse…** and remembered in
+  `%LOCALAPPDATA%\GeminiBatch\ui-settings.json`; the manifest is always `<output>\manifest.json` (no `ManifestPath`); the grid previews the planned jobs
   before Start. Concurrency is capped at the enabled-account count. Live grid (`BufferedDataGridView`, double-buffered,
   per-row update, colored Status cell, Error column), StatusStrip counts + progress bar, "Resume detected" note
   (manifest skips = `Skipped` with no error), **Open output folder**, and a non-modal last-run summary box

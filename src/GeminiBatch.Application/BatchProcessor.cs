@@ -376,7 +376,7 @@ public sealed class BatchProcessor
                 SkipAlreadyCompleted(job, progress);
                 return false;
             }
-            savedPath = await _storage.SaveAsync(image.TempFilePath, job.DesiredFileName ?? image.SuggestedFileName, ct).ConfigureAwait(false);
+            savedPath = await _storage.SaveAsync(image.TempFilePath, job.DesiredFileName ?? image.SuggestedFileName, job.Section, ct).ConfigureAwait(false);
         }
         finally
         {

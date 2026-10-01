@@ -1,28 +1,33 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using GeminiBatch.Application;
 using GeminiBatch.Application.Abstractions;
-using GeminiBatch.Application.Options;
-using Microsoft.Extensions.Options;
 
 namespace GeminiBatch.Infrastructure.Manifest;
 
-/// <summary>JSON dictionary of manifest key → completion record. Writes are atomic (temp file + move).</summary>
+/// <summary>
+/// JSON dictionary of manifest key → completion record, stored in the output folder (<see cref="OutputLocation.ManifestPath"/>,
+/// resolved on every load so a folder picked between runs gets its own manifest). Writes are atomic (temp file + move).
+/// </summary>
 public sealed class JsonJobManifest : IJobManifest
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
-    private readonly string _path;
+    private readonly OutputLocation _location;
+    private string _path;
     private readonly ConcurrentDictionary<string, ManifestEntry> _entries = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
-    public JsonJobManifest(IOptions<BatchOptions> options)
+    public JsonJobManifest(OutputLocation location)
     {
-        _path = Path.GetFullPath(options.Value.ManifestPath);
+        _location = location;
+        _path = location.ManifestPath;
     }
 
     public async Task LoadAsync(CancellationToken ct)
     {
         _entries.Clear();
+        _path = _location.ManifestPath;
         if (!File.Exists(_path)) return;
 
         await using var stream = File.OpenRead(_path);

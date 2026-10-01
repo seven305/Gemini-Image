@@ -44,6 +44,35 @@ public sealed class TextPromptSourceTests : IDisposable
     }
 
     [Fact]
+    public void Image_prompt_csv_maps_the_section_and_ignores_the_other_columns()
+    {
+        var path = WriteCsv(
+            "#,Section,Blend Ratio,Woman Type,Flag Type,Image Prompt\n" +
+            "A2,A,Mixed — Cash & Wealth Signals,N,OBJECT,\"A kitchen, warm light. A mug reading \"\"Hallo\"\".\"\n" +
+            "B1, B ,Cash Dominant,N,FABRIC,An older man\n" +
+            "X1,,Other,N,N,No section\n" +
+            ",\n");
+
+        var jobs = new TextPromptSource().FromCsv(path);
+
+        Assert.Equal(3, jobs.Count);
+        Assert.Equal("A kitchen, warm light. A mug reading \"Hallo\".", jobs[0].Prompt);
+        Assert.Equal(["A", "B", null], jobs.Select(j => j.Section));
+        Assert.All(jobs, j => Assert.Null(j.DesiredFileName));
+    }
+
+    [Fact]
+    public void Csv_left_open_for_writing_by_another_program_still_loads()
+    {
+        var path = WriteCsv("Section,Image Prompt\nA,A cat\n");
+        using var heldOpen = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite); // like Excel
+
+        var jobs = new TextPromptSource().FromCsv(path);
+
+        Assert.Equal("A cat", Assert.Single(jobs).Prompt);
+    }
+
+    [Fact]
     public void Csv_without_prompt_column_is_rejected()
     {
         var path = WriteCsv("name|text\nx|y\n");

@@ -114,8 +114,11 @@ The skipped account and the reason are listed in the summary box at the end of t
 ### 2.5 Output folder
 
 - Images go to the `output` folder next to the exe by default.
-- The full path is shown in the read-only box beside **Open output folder**.
-- To change it, edit `appsettings.json` (see [2.7](#27-settings-you-can-change)): set `Batch:OutputFolder` **and** `Batch:ManifestPath` (keep the manifest inside the new folder, e.g. `D:\Images\manifest.json`). Restart the app.
+- The full path is shown in the box beside **Open output folder**.
+- To change it, click **Browse…** (right of the path) and pick or create a folder. The app remembers it for the next launch.
+- Prompts from a CSV with a **Section** column are saved in a sub-folder per section, e.g. `D:\Images\A\`, `D:\Images\B\` (see [3.2](#32-loading-a-prompts-csv)).
+- The resume record `manifest.json` always sits in the chosen folder, so each output folder resumes on its own.
+- **Browse…** is locked while a batch is running.
 
 ### 2.6 Concurrency
 
@@ -135,8 +138,7 @@ Settings live in **`appsettings.json`** in the app folder. Open it in Notepad, c
 | Setting | Default | What it does |
 |---|---|---|
 | `Batch:DefaultConcurrency` | `5` | Starting value of **Concurrency:** |
-| `Batch:OutputFolder` | `output` | Where images are saved (relative = next to the exe) |
-| `Batch:ManifestPath` | `output/manifest.json` | The resume record. Keep it with the images. |
+| `Batch:OutputFolder` | `output` | Default output folder (relative = next to the exe), used until you pick one with **Browse…** |
 | `Batch:MaxImagesPerAccount` | `1` | Images each account makes before its window closes and the next account takes over. `0` = no limit. |
 | `Batch:RandomizePrompts` | `true` | See [3.4](#34-how-many-images-will-be-made). `false` = each prompt once, in order. |
 | `Batch:MaxRetriesPerJob` | `3` | Retries for one image on the same account before giving up |
@@ -153,7 +155,7 @@ Leave every other setting alone unless a developer asks you to change it. In par
 
 ## 3. Preparing prompts
 
-You can type prompts or load a prompts CSV. Use the CSV when you want to choose the file names.
+You can type prompts or load a prompts CSV. Use the CSV when you want images sorted into section folders (or to choose file names).
 
 ### 3.1 Typing prompts
 
@@ -177,10 +179,20 @@ Typed prompts get automatic file names (see [5.2](#52-file-names)).
 
 1. Click **Load prompts CSV…**.
 2. Pick the file.
-3. The prompts appear in the box, and the label shows e.g. **3 prompt(s) loaded from prompts.csv**.
-4. The **Filename** column in the grid shows your chosen names.
+3. The prompts appear in the box, and the label shows e.g. **44 prompt(s) loaded from prompts.csv**.
+4. The **Section** column in the grid shows the folder each image goes to.
 
-Recommended format — pipe (`|`) separated, so commas in prompts are safe:
+**Section format** (the client sheet): the prompt is read from the **`Image Prompt`** column and the folder from the **`Section`** column. Every other column (`#`, `Blend Ratio`, …) is ignored.
+
+```text
+#,Section,Blend Ratio,Woman Type,Flag Type,Image Prompt
+A2,A,Mixed — Cash & Wealth Signals,N,OBJECT,"A contemporary home kitchen, warm afternoon window light. …"
+B1,B,Cash Dominant — LP1 Background,N,FABRIC,"An older German man, early 60s, …"
+```
+
+Each image is saved in `<output folder>\<Section>\`, e.g. `output\A\`. A row with an empty Section goes straight into the output folder. Files get automatic names in this format.
+
+**Filename format** — pipe (`|`) separated, so commas in prompts are safe:
 
 ```text
 Filename | Prompt
@@ -191,11 +203,12 @@ book_stack | A stack of hardcover books, top-down view
 
 Rules:
 
-- The **first line must be a header** with a column named `Prompt`. A `Filename` column is optional. Upper/lower case does not matter.
+- The **first line must be a header** with a column named `Image Prompt` (optional `Section`) or `Prompt` (optional `Filename`; a `Section` column works here too). Upper/lower case does not matter.
 - The separator is taken from the header line: `|`, tab, `;`, or `,` (in that order of preference).
 - With commas as the separator, any prompt that contains a comma must be in double quotes. The pipe format avoids this.
 - Write file names **without** an extension (`red_mug`, not `red_mug.jpg`). The app adds the right one.
 - Rows with an empty prompt are skipped. An empty filename means an automatic name.
+- The CSV may stay open in Excel while you load it.
 
 ![Prompts CSV example](docs/img/prompts-csv-example.png)
 ![Prompts CSV loaded](docs/img/prompts-csv-loaded.png)
@@ -204,7 +217,7 @@ Rules:
 
 ### 3.3 Check the preview
 
-Before you press **Start**, the grid already lists the images the app plans to make. Each row shows the **Prompt** (hover for the full text), the **Filename** (or **(auto)**), and **Status** = **Pending**. The bottom bar shows **Ready — N image(s) to run**.
+Before you press **Start**, the grid already lists the images the app plans to make. Each row shows the **Prompt** (hover for the full text), the **Section** (empty = output folder itself), the **Filename** (or **(auto)**), and **Status** = **Pending**. The bottom bar shows **Ready — N image(s) to run**.
 
 ### 3.4 How many images will be made
 
@@ -231,7 +244,7 @@ If `RandomizePrompts` is `false`, each prompt is made once, in order, and accoun
 
 If something is missing, a **Cannot start** message explains what to fix (for example, "Enter at least one prompt…"). Nothing pops up after the run has started.
 
-While running, the prompt box, **Concurrency:**, **Load prompts CSV…** and **Accounts CSV…** are locked.
+While running, the prompt box, **Concurrency:**, **Load prompts CSV…**, **Accounts CSV…** and **Browse…** are locked.
 
 ### 4.2 Reading the grid
 
@@ -240,6 +253,7 @@ While running, the prompt box, **Concurrency:**, **Load prompts CSV…** and **A
 | Column | Meaning |
 |---|---|
 | **Prompt** | The prompt (first 80 characters; hover for all of it) |
+| **Section** | The sub-folder of the output folder the image is saved in (empty = the output folder itself) |
 | **Filename** | Planned name, then the real saved file name once done |
 | **Status** | Where the image is (coloured, see below) |
 | **Account** | The account working on it (the part of the email before `@`) |
@@ -299,7 +313,7 @@ An account is "quarantined" (not used again this run) when it cannot sign in, wh
 
 ### 5.1 Where images go
 
-Click **Open output folder**. By default it is the `output` folder next to the exe.
+Click **Open output folder**. By default it is the `output` folder next to the exe; change it with **Browse…**. Images from a Section CSV are inside one sub-folder per section (`A\`, `B\`, …).
 
 ![Output folder](docs/img/output-folder.png)
 
@@ -309,7 +323,7 @@ Images are saved in the format Gemini serves — usually **`.jpg`** (sometimes `
 
 - From a prompts CSV with a filename: `red_mug.jpg`.
 - Typed prompts (or an empty filename): `gemini_YYYYMMDD_HHMMSS.jpg`, e.g. `gemini_20260930_142501.jpg`.
-- **Files are never overwritten.** If the name is taken, the app adds a number: `red_mug.jpg`, `red_mug_2.jpg`, `red_mug_3.jpg`, … This is also what happens when the same prompt is used more than once in a randomized batch.
+- **Files are never overwritten.** If the name is taken in that folder, the app adds a number: `red_mug.jpg`, `red_mug_2.jpg`, `red_mug_3.jpg`, … This is also what happens when the same prompt is used more than once in a randomized batch.
 - Characters Windows does not allow in file names are replaced with `_`.
 
 ### 5.3 Re-running and resume
@@ -392,6 +406,7 @@ SETUP (once)
 
 PROMPTS
   • Type: one per line, # = comment             → names: gemini_YYYYMMDD_HHMMSS.jpg
+  • CSV:  Section,Image Prompt (+ any other cols) → saved in <output>\<Section>\
   • CSV:  Filename | Prompt   (header required)  → names: your filename (no extension)
   • Editing the box after loading a CSV drops the CSV filenames
 
@@ -406,7 +421,7 @@ STATUS
   Completed (green) · Failed (red) · Skipped (grey = already done / duplicate)
 
 RESULTS
-  • Open output folder  (default: output\ next to the exe)
+  • Open output folder  (default: output\ next to the exe) · Browse… to change (remembered)
   • Never overwrites: name.jpg, name_2.jpg, name_3.jpg …
   • manifest.json = resume record. Same prompts + same account emails → resumes.
   • Fresh start: rename manifest.json

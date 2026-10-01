@@ -5,6 +5,8 @@ public sealed class BatchOptions
     public const string SectionName = "Batch";
 
     public int DefaultConcurrency { get; set; } = 5;
+
+    /// <summary>Default output folder; the operator can pick another in the UI. The resume manifest lives inside it.</summary>
     public string OutputFolder { get; set; } = "output";
     public int MaxRetriesPerJob { get; set; } = 3;
     public double RetryBaseDelaySeconds { get; set; } = 5;
@@ -37,5 +39,4 @@ public sealed class BatchOptions
 
     /// <summary>Use the offline fake session instead of the real browser (testing without Google accounts).</summary>
     public bool UseFakeSession { get; set; }
-    public string ManifestPath { get; set; } = Path.Combine("output", "manifest.json");
 }
