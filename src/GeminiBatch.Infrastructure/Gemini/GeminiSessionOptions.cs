@@ -58,4 +58,11 @@ public sealed class GeminiSessionOptions
     /// extra request to a non-Google host, useful to verify the proxy setup, not for everyday runs.
     /// </summary>
     public string? ProxyCheckUrl { get; set; }
+
+    /// <summary>
+    /// How many automated Google sign-ins may run at once, app-wide. 0 (default) = no limit: every worker signs its
+    /// own account in as soon as it needs to, so Concurrency N means N browsers signing in in parallel. Parallel
+    /// sign-ins from one IP are more likely to draw CAPTCHAs; set 1 to sign accounts in one at a time.
+    /// </summary>
+    public int MaxConcurrentSignIns { get; set; }
 }

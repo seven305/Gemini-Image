@@ -368,7 +368,12 @@ The batch always continues with the other accounts. Expect accounts to need sign
 ### A batch seems stuck
 
 - A Gemini image can take a while. The app waits up to **180 seconds** per image, then retries (up to 3 times).
-- Sign-ins happen **one at a time**. With several signed-out accounts, the others wait — up to 3 minutes each.
+- Each browser signs its own account in, so with Concurrency 5 up to five sign-ins run at once. (An admin can set
+  `Gemini:MaxConcurrentSignIns` to `1` in `appsettings.json` to sign accounts in one at a time instead; the others then wait.)
+- Don't **minimize** the Chrome windows or the Remote Desktop window during a run: Chrome stops drawing minimized
+  windows and the automation stalls (the app restores a minimized Chrome window itself, but not a minimized RDP
+  window). Covering windows with other windows is fine. To keep RDP working while minimized, set the DWORD
+  `RemoteDesktop_SuppressWhenMinimized` = `2` under `HKEY_CURRENT_USER\Software\Microsoft\Terminal Server Client` on the PC you connect *from*.
 - Look at the **Status** and **Attempts** columns: if they change, it is working.
 - Open the newest file in `logs\` to see what is happening right now.
 - If nothing has changed for 10+ minutes: click **Stop**, wait for **Stopped**, then **Start** again. Finished images are kept.

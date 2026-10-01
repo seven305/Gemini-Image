@@ -31,6 +31,8 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     private static readonly TimeSpan AutoSignInTimeout = TimeSpan.FromMinutes(3);
 
     private IPage _page;
+    private ICDPSession? _cdp;
+    private IPage? _cdpPage;
     private bool _disposed;
     private bool _autoSignInAttempted;
     private volatile bool _contextClosed;
@@ -225,7 +227,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     private bool CanAutoSignIn => _account.Credentials is not null && !_autoSignInAttempted;
 
     /// <summary>
-    /// Signs the profile in, queued behind any other account's sign-in (<see cref="GoogleSignInGate"/>).
+    /// Signs the profile in, in parallel with other accounts up to the <see cref="GoogleSignInGate"/> cap.
     /// Returns null on success, else why it failed — that text ends up in the account's quarantine reason.
     /// </summary>
     private async Task<string?> AutoSignInAsync(CancellationToken ct)
@@ -259,16 +261,38 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
     private async Task EnsurePageAsync(CancellationToken ct)
     {
         if (_contextClosed) throw SessionLost("ensure-page", null);
-        if (!_page.IsClosed) return;
-        _logger.LogWarning("Page for {AccountId} is closed; opening a new one in the same context", _account.Id);
-        try
+        if (_page.IsClosed)
         {
-            _page = await _context.NewPageAsync().WaitAsync(ct).ConfigureAwait(false);
+            _logger.LogWarning("Page for {AccountId} is closed; opening a new one in the same context", _account.Id);
+            try
+            {
+                _page = await _context.NewPageAsync().WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (PlaywrightException ex)
+            {
+                throw SessionLost("ensure-page", ex);
+            }
         }
-        catch (PlaywrightException ex)
+        await RestoreWindowIfMinimizedAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>A minimized window stops rendering; see <see cref="BrowserWindowGuard"/>.</summary>
+    private async Task RestoreWindowIfMinimizedAsync()
+    {
+        if (_cdp is null || _cdpPage != _page)
         {
-            throw SessionLost("ensure-page", ex);
+            try
+            {
+                _cdp = await _context.NewCDPSessionAsync(_page).ConfigureAwait(false);
+                _cdpPage = _page;
+            }
+            catch (PlaywrightException ex)
+            {
+                _logger.LogDebug(ex, "No CDP session for {AccountId}; skipping the window-state check", _account.Id);
+                return;
+            }
         }
+        await BrowserWindowGuard.RestoreIfMinimizedAsync(_cdp, _logger, _account.Id).ConfigureAwait(false);
     }
 
     private void OnContextClosed(object? sender, IBrowserContext context)
@@ -368,6 +392,8 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
             .WaitAsync(ct).ConfigureAwait(false);
         _logger.LogDebug("Response streaming finished after {Elapsed:F1}s", sw.Elapsed.TotalSeconds);
 
+        // The image only decodes (img.loaded) in a rendering window; undo a minimize that happened mid-generation.
+        await RestoreWindowIfMinimizedAsync().ConfigureAwait(false);
         try
         {
             await GeminiSelectors.LatestGeneratedImage(_page)
@@ -487,7 +513,9 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
             var aria = await GeminiSelectors.Root(_page).AriaSnapshotAsync(new() { Timeout = 10_000 }).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(_diagnosticsDir, stamp + ".aria.yml"), aria).ConfigureAwait(false);
 
-            _logger.LogWarning("Diagnostics for step {Step}: {Path}", step, shotPath);
+            // "hidden" means the window was minimized (or the RDP session was not rendering) when the step failed.
+            var visibility = await _page.EvaluateAsync<string>("document.visibilityState").ConfigureAwait(false);
+            _logger.LogWarning("Diagnostics for step {Step} (page visibility: {Visibility}): {Path}", step, visibility, shotPath);
         }
         catch (Exception ex)
         {

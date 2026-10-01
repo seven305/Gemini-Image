@@ -151,12 +151,14 @@ public sealed partial class MainForm : Form
         SetRunning(true);
         var started = DateTime.Now;
         _txtRunSummary.Text = $"Run started {started:HH:mm:ss} — {jobs.Count} image(s) from {prompts.Count} prompt(s), output: {outputFolder}";
-        // Each worker signs its account in (one at a time, app-wide) when its profile turns out to be signed out.
-        _lblStatus.Text = $"Signing in accounts and running {jobs.Count} image(s)…";
+        // Each worker runs its own browser and signs its account in (in parallel, up to Gemini:MaxConcurrentSignIns)
+        // when its profile turns out to be signed out.
+        var concurrency = (int)_numConcurrency.Value;
+        _lblStatus.Text = $"Running {jobs.Count} image(s) with {concurrency} browser(s) at a time…";
+        _logger.LogInformation("Start clicked: {Jobs} job(s), concurrency {Concurrency}", jobs.Count, concurrency);
 
         // Progress<T> captures the UI SynchronizationContext here, so ApplyUpdate always runs on the UI thread.
         var progress = new Progress<JobUpdate>(ApplyUpdate);
-        var concurrency = (int)_numConcurrency.Value;
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
 

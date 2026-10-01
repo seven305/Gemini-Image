@@ -49,7 +49,7 @@ account quarantine after threshold, manifest resume, inter-prompt jitter.
 Headful, one account per persistent context/profile, per-account proxy support, human-like
 pacing/jitter, low concurrency (default 5). Login is automated from the CSV roster (email, password,
 recovery email, TOTP key -> `GoogleSignInDriver`) with no manual fallback in the app: an account that hits a
-CAPTCHA/unknown challenge is skipped; sign-ins run one account at a time. Expect periodic
+CAPTCHA/unknown challenge is skipped; sign-ins run in parallel (one per worker), capped by `Gemini:MaxConcurrentSignIns` (0 = no cap). Expect periodic
 re-auth; no code removes it fully.
 
 ## Verified specifics (from Phase 0 spike)
@@ -61,7 +61,7 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
 - Phase 2 (real Playwright Gemini session): code complete, awaiting the first live-account run.
   Built: `GeminiSelectors`, `PlaywrightGeminiSession(+Factory)`, `PlaywrightBrowserLauncher`,
   `GoogleSignInDriver` + `GoogleSignInGate` (automated sign-in from CSV credentials incl. TOTP via
-  `TotpGenerator`; once per session, one account at a time), `AccountUnavailableException`,
+  `TotpGenerator`; once per session, parallel up to `Gemini:MaxConcurrentSignIns`), `AccountUnavailableException`,
   `Batch:UseFakeSession` switch, failure diagnostics (screenshot + ARIA snapshot). Google's post-sign-in nags
   (`gds.google.com/web/*` e.g. recovery options, `myaccount.google.com/verification/selfie/*`) are skipped by reopening
   `/app` (`GeminiSelectors.IsPostSignInPrompt`), a bounded number of times.
@@ -102,7 +102,7 @@ Run GeminiBatch.WinForms: paste prompts and **Start**. Start asks for the accoun
 (`email,password,recovery email,2FA key,proxy`; only the email is required; proxy is a URL such as
 `http://user:pass@host:port` or `socks5://host:port`; header optional; `*.csv` is git-ignored) and re-reads it
 on every run; **Accounts CSV…** switches files. The CSV is the only account source. Each worker signs its account
-in automatically if the profile is signed out — one sign-in at a time app-wide (`GoogleSignInGate`). An
+in automatically if the profile is signed out — sign-ins run in parallel, capped app-wide by `Gemini:MaxConcurrentSignIns` (`GoogleSignInGate`, 0 = no cap). A minimized Chrome window is restored automatically (`BrowserWindowGuard`). An
 account whose sign-in fails (CAPTCHA, unknown challenge, wrong password, no password) is skipped, the batch
 continues, and skipped accounts + reasons are listed at the end.
 Offline testing: `Batch:UseFakeSession=true` (appsettings.json or `GEMINIBATCH_Batch__UseFakeSession=true`)

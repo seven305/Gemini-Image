@@ -73,6 +73,9 @@ public sealed class BatchProcessor
             throw new InvalidOperationException("No enabled, non-quarantined accounts are available.");
 
         var workerCount = Math.Clamp(concurrency, 1, eligible.Count);
+        if (workerCount != concurrency)
+            _logger.LogWarning("Concurrency {Requested} adjusted to {Workers} worker(s) ({Eligible} eligible account(s))",
+                concurrency, workerCount, eligible.Count);
         var run = new RunState(eligible);
 
         // The whole batch is queued up front (it is small); workers put jobs back when their account dies.

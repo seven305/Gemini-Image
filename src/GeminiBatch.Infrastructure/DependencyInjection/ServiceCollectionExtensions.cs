@@ -11,6 +11,7 @@ using GeminiBatch.Infrastructure.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 namespace GeminiBatch.Infrastructure.DependencyInjection;
@@ -36,7 +37,8 @@ public static class ServiceCollectionExtensions
         {
             // One launcher for the whole app: it owns the Playwright driver process.
             services.AddSingleton<PlaywrightBrowserLauncher>();
-            services.AddSingleton<GoogleSignInGate>();
+            services.AddSingleton(sp => new GoogleSignInGate(
+                sp.GetRequiredService<IOptions<GeminiSessionOptions>>().Value.MaxConcurrentSignIns));
             services.AddSingleton<IGeminiSessionFactory, PlaywrightGeminiSessionFactory>();
         }
 
