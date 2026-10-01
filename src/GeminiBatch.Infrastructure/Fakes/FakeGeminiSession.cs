@@ -26,6 +26,7 @@ public sealed class FakeGeminiSession : IGeminiSession
     private readonly string _tempDir;
     private readonly int _sessionNumber;
     private int _calls;
+    private int _images;
 
     /// <param name="sessionNumber">1 for an account's first session, 2 after a relaunch, … (only the first one "crashes").</param>
     public FakeGeminiSession(GeminiAccount account, FakeSessionOptions options, int sessionNumber, ILogger<FakeGeminiSession> logger)
@@ -55,6 +56,10 @@ public sealed class FakeGeminiSession : IGeminiSession
         await Task.Delay(Random.Shared.Next(min, max + 1), ct).ConfigureAwait(false);
 
         var call = Interlocked.Increment(ref _calls);
+        if (_options.DailyLimitAfterImages > 0 && Volatile.Read(ref _images) >= _options.DailyLimitAfterImages)
+            throw new AccountUnavailableException(AccountUnavailableReason.DailyLimitReached,
+                $"[fake] account {_account.Id} reached its daily limit of {_options.DailyLimitAfterImages} image(s)");
+
         if (call > _options.AccountLossAfterCalls)
         {
             if (_options.UnavailableAccountIds.Contains(_account.Id, StringComparer.OrdinalIgnoreCase))
@@ -73,6 +78,7 @@ public sealed class FakeGeminiSession : IGeminiSession
         Directory.CreateDirectory(_tempDir);
         var tempPath = Path.Combine(_tempDir, $"{Guid.NewGuid():N}.png");
         await File.WriteAllBytesAsync(tempPath, PlaceholderPng, ct).ConfigureAwait(false);
+        Interlocked.Increment(ref _images);
 
         _logger.LogDebug("[fake] generated placeholder for prompt {PromptPreview}", Preview(prompt));
         return new GeneratedImage(tempPath, "gemini-image");

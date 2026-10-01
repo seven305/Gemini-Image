@@ -17,6 +17,12 @@ public enum AccountUnavailableReason
     /// before quarantining it.
     /// </summary>
     SessionLost,
+
+    /// <summary>
+    /// Gemini said the account has used up its image generations for today. The account is healthy, just done for
+    /// the day: its turn ends without a quarantine and the job goes to the next account.
+    /// </summary>
+    DailyLimitReached,
 }
 
 /// <summary>

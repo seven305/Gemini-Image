@@ -141,6 +141,7 @@ Settings live in **`appsettings.json`** in the app folder. Open it in Notepad, c
 | `Batch:OutputFolder` | `output` | Default output folder (relative = next to the exe), used until you pick one with **Browse…** |
 | `Batch:MaxImagesPerAccount` | `1` | Images each account makes before its window closes and the next account takes over. `0` = no limit. |
 | `Batch:RandomizePrompts` | `true` | See [3.4](#34-how-many-images-will-be-made). `false` = each prompt once, in order. |
+| `Batch:GenerateUntilDailyLimit` | `true` | Whether **Generate until each account's daily limit** starts ticked. |
 | `Batch:MaxRetriesPerJob` | `3` | Retries for one image on the same account before giving up |
 | `Batch:GenerationTimeoutSeconds` | `180` | How long to wait for Gemini to finish one image |
 | `Batch:StartupStaggerMs` | `4000` | Delay between opening each Chrome window at the start |
@@ -221,7 +222,24 @@ Before you press **Start**, the grid already lists the images the app plans to m
 
 ### 3.4 How many images will be made
 
-With the default settings (`RandomizePrompts` on, `MaxImagesPerAccount` = 1):
+**Generate until each account's daily limit** (the tick box right of **Load prompts CSV…**, ticked by default):
+
+- Each account keeps making images, **each from a prompt picked at random from your list**, until Gemini says the
+  account has reached its daily image limit. Then its window closes and the next account in the CSV takes over.
+- There is no plan up front: the grid shows your prompts before Start, and during the run a new row appears for every
+  image as it is started. The progress bar just moves (the total is not known until the limits are hit).
+- The run ends when every account has reached its limit (or was skipped). The summary lists the accounts that reached
+  their limit. The last image that was handed on when no account was left shows **Skipped** with *Not generated: every
+  account reached its daily limit or was skipped.*
+- Running again the same day just finds every account at its limit again; run it the next day. New images never
+  replace earlier ones.
+- `MaxImagesPerAccount` is ignored in this mode.
+- How the limit is recognized: by the wording of Gemini's reply when it makes no image. If Gemini words it in a way
+  the app does not know, the account fails 3 images in a row and is quarantined instead — the batch still moves on,
+  and the screenshot in `diagnostics` shows the message (send it to the developer).
+
+**Untick it** for the planned mode — one prompt per account, then the next account. With the default settings
+(`RandomizePrompts` on, `MaxImagesPerAccount` = 1):
 
 - **Each account makes one image**, from a prompt picked at random from your list. Prompts can repeat.
 - So **number of images = number of accounts**, no matter how many prompts you give. 5 prompts and 10 accounts → 10 images.

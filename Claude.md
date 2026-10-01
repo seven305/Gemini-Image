@@ -80,6 +80,16 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   picked prompt, repeats allowed; `PromptJob.Occurrence` makes repeated prompts' keys unique (`key#2`…). The seed is
   derived from prompts + account emails, so re-planning the same batch resumes exactly. Opt-in `Gemini:ProxyCheckUrl` logs each account's egress IP. Fake knobs
   `Fake:UnavailableAccountIds` / `SessionLostAccountIds` / `AccountLossAfterCalls` reproduce the failure paths offline.
+  Daily limit: `AccountUnavailableReason.DailyLimitReached` (thrown when a turn ends without an image and the reply
+  matches `GeminiSelectors.IsDailyLimitMessage` — patterns NOT spike-verified, refine from diagnostics after the first
+  live hit) ends the account's turn without quarantine and requeues its job; `BatchResult.LimitReachedAccounts`.
+  "Until daily limit" mode (UI checkbox, default on via `Batch:GenerateUntilDailyLimit`):
+  `BatchProcessor.RunUntilDailyLimitAsync(prompts, …)` has no planned job list — `PromptFeed` makes a job from a random
+  prompt whenever a worker needs one (next `Occurrence` whose key is free in the manifest), `MaxImagesPerAccount` is
+  ignored, each account runs until its limit/quarantine, and the run ends when every account has had its turn (the job
+  handed on by the last account is `Skipped`). Each new job is reported Pending first; `JobUpdate` carries
+  Prompt/Section/DesiredFileName so the grid adds the row. Unchecked = the planned one-turn-per-account `RunAsync` path.
+  `Fake:DailyLimitAfterImages` (0 = never; appsettings sets 5) makes fake sessions hit the limit.
 - Phase 4 (operator UI): code complete. Prompts come from the text box or **Load prompts CSV…** (client layout
   `Image Prompt` + `Section`, other columns ignored; or legacy `Filename | Prompt`; delimiter picked from the header line,
   filenames -> `DesiredFileName`, Section -> `PromptJob.Section`; opened FileShare.ReadWrite so Excel can hold it).

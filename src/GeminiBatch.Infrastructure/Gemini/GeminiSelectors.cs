@@ -116,6 +116,31 @@ public static class GeminiSelectors
     public static ILocator DownloadFullSizeButton(IPage page) =>
         page.GetByRole(AriaRole.Button, new() { Name = "Download full size image" }).First;
 
+    // ---- Daily image limit --------------------------------------------------------------------
+    // NOT spike-verified: no account hit its limit during the spike. These are the phrasings Gemini is known to
+    // use when it declines to make more images for the day; they are matched against the text of the reply that
+    // came back without an image. Every miss still leaves a screenshot + ARIA snapshot in the diagnostics folder,
+    // so add the real wording here after the first live hit.
+
+    private static readonly System.Text.RegularExpressions.Regex[] DailyLimitPatterns =
+    [
+        Limit(@"reached (your|the) (daily )?((image|images|image generation|generation|creation|usage) )?limit"),
+        Limit(@"(hit|used up|exceeded) (your|the) (daily )?((image|image generation|generation) )?(limit|quota)"),
+        Limit(@"(can['’]?t|cannot|can not|unable to) (create|generate|make) (any )?more images"),
+        Limit(@"(daily |image |generation )limit (resets|will reset|refreshes)"),
+        Limit(@"(try|check) (again|back) tomorrow"),
+        Limit(@"come back tomorrow"),
+        Limit(@"out of (image )?(generations|quota|credits)"),
+    ];
+
+    private static System.Text.RegularExpressions.Regex Limit(string pattern) =>
+        new(pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant
+            | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>True when Gemini's reply (a turn that produced no image) says the account's daily image limit is used up.</summary>
+    public static bool IsDailyLimitMessage(string? replyText) =>
+        !string.IsNullOrWhiteSpace(replyText) && DailyLimitPatterns.Any(p => p.IsMatch(replyText));
+
     // ---- Google sign-in (accounts.google.com) -------------------------------------------------
     // NOT spike-verified: taken from Google's long-standing sign-in form field names, which (unlike the
     // button labels) are language-independent. Every step is submitted with Enter rather than by clicking

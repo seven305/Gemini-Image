@@ -26,6 +26,7 @@ namespace GeminiBatch.Application;
 public sealed class BatchProcessor
 {
     private const string NoAccountsLeft = "No accounts left to run this job (all used or quarantined).";
+    private const string NoAccountsLeftUntilLimit = "Not generated: every account reached its daily limit or was skipped.";
 
     private static readonly ResiliencePropertyKey<PromptJob> JobKey = new("GeminiBatch.Job");
     private static readonly ResiliencePropertyKey<IProgress<JobUpdate>> ProgressKey = new("GeminiBatch.Progress");
@@ -66,17 +67,8 @@ public sealed class BatchProcessor
         ArgumentNullException.ThrowIfNull(accounts);
         ArgumentNullException.ThrowIfNull(progress);
 
-        await _manifest.LoadAsync(ct).ConfigureAwait(false);
-
-        var eligible = AccountEligibility.Select(accounts, _logger);
-        if (eligible.Count == 0)
-            throw new InvalidOperationException("No enabled, non-quarantined accounts are available.");
-
-        var workerCount = Math.Clamp(concurrency, 1, eligible.Count);
-        if (workerCount != concurrency)
-            _logger.LogWarning("Concurrency {Requested} adjusted to {Workers} worker(s) ({Eligible} eligible account(s))",
-                concurrency, workerCount, eligible.Count);
-        var run = new RunState(eligible);
+        var (eligible, workerCount) = await PrepareAsync(accounts, concurrency, ct).ConfigureAwait(false);
+        var run = new RunState(eligible, generator: null);
 
         // The whole batch is queued up front (it is small); workers put jobs back when their account dies.
         var keysInBatch = new HashSet<string>(StringComparer.Ordinal);
@@ -106,6 +98,62 @@ public sealed class BatchProcessor
         _logger.LogInformation("Starting batch: {JobCount} jobs ({Queued} queued), {WorkerCount} workers drawing from {AccountCount} accounts, {MaxImages} image(s) per account",
             jobs.Count, run.Outstanding, workerCount, eligible.Count, _options.MaxImagesPerAccount > 0 ? _options.MaxImagesPerAccount : "unlimited");
 
+        return await ExecuteAsync(run, workerCount, jobs.Count, progress, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The "until daily limit" mode: no planned job list. Every account (in roster order, one turn each) keeps
+    /// generating images from randomly picked <paramref name="prompts"/> until Gemini reports its daily limit, it is
+    /// quarantined, or the run is cancelled; then its worker moves to the next account. The run ends when every
+    /// account has had its turn. Each job is reported (Pending) as soon as it is created.
+    /// </summary>
+    public async Task<BatchResult> RunUntilDailyLimitAsync(
+        IReadOnlyList<PromptJob> prompts,
+        IReadOnlyList<GeminiAccount> accounts,
+        int concurrency,
+        IProgress<JobUpdate> progress,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(prompts);
+        ArgumentNullException.ThrowIfNull(accounts);
+        ArgumentNullException.ThrowIfNull(progress);
+        if (prompts.Count == 0)
+            throw new ArgumentException("At least one prompt is required.", nameof(prompts));
+
+        var (eligible, workerCount) = await PrepareAsync(accounts, concurrency, ct).ConfigureAwait(false);
+        var feed = new PromptFeed(prompts);
+        var run = new RunState(eligible, generator: () =>
+        {
+            var job = feed.Next(_manifest.IsCompleted);
+            progress.Report(JobUpdate.From(job));
+            return job;
+        });
+
+        _logger.LogInformation("Starting batch until daily limits: {PromptCount} prompt(s), {WorkerCount} workers drawing from {AccountCount} accounts",
+            prompts.Count, workerCount, eligible.Count);
+
+        return await ExecuteAsync(run, workerCount, total: null, progress, ct).ConfigureAwait(false);
+    }
+
+    private async Task<(IReadOnlyList<GeminiAccount> Eligible, int WorkerCount)> PrepareAsync(
+        IReadOnlyList<GeminiAccount> accounts, int concurrency, CancellationToken ct)
+    {
+        await _manifest.LoadAsync(ct).ConfigureAwait(false);
+
+        var eligible = AccountEligibility.Select(accounts, _logger);
+        if (eligible.Count == 0)
+            throw new InvalidOperationException("No enabled, non-quarantined accounts are available.");
+
+        var workerCount = Math.Clamp(concurrency, 1, eligible.Count);
+        if (workerCount != concurrency)
+            _logger.LogWarning("Concurrency {Requested} adjusted to {Workers} worker(s) ({Eligible} eligible account(s))",
+                concurrency, workerCount, eligible.Count);
+        return (eligible, workerCount);
+    }
+
+    /// <param name="total">The planned job count, or null when jobs are created during the run.</param>
+    private async Task<BatchResult> ExecuteAsync(RunState run, int workerCount, int? total, IProgress<JobUpdate> progress, CancellationToken ct)
+    {
         run.ActiveWorkers = workerCount;
         var workers = Enumerable.Range(0, workerCount).Select(index => Task.Run(async () =>
         {
@@ -127,23 +175,33 @@ public sealed class BatchProcessor
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            LogSummary("cancelled", BuildResult(jobs, run, leftovers: 0));
+            LogSummary("cancelled", BuildResult(total, run, leftovers: 0));
             throw;
         }
 
         // Anything still queued was never picked up because the accounts ran out (used or quarantined). Report it as
-        // a failure rather than leaving it silently unprocessed.
+        // a failure rather than leaving it silently unprocessed. In the until-limit mode running out of accounts is
+        // the normal end, so the job handed on by the last account is skipped instead.
         var leftovers = 0;
         while (run.Reader.TryRead(out var leftover))
         {
             leftover.AssignedAccountId = null;
-            leftover.LastError = NoAccountsLeft;
-            SetStatus(leftover, JobStatus.Failed, progress);
-            run.CountFailed();
-            leftovers++;
+            if (run.Endless)
+            {
+                leftover.LastError = NoAccountsLeftUntilLimit;
+                SetStatus(leftover, JobStatus.Skipped, progress);
+                run.CountSkipped();
+            }
+            else
+            {
+                leftover.LastError = NoAccountsLeft;
+                SetStatus(leftover, JobStatus.Failed, progress);
+                run.CountFailed();
+                leftovers++;
+            }
         }
 
-        var result = BuildResult(jobs, run, leftovers);
+        var result = BuildResult(total, run, leftovers);
         LogSummary("finished", result);
         return result;
     }
@@ -153,7 +211,7 @@ public sealed class BatchProcessor
         await StartupStaggerAsync(index, ct).ConfigureAwait(false);
 
         // Wait for work before taking an account, so no browser is launched once the queue has drained.
-        while (await run.Reader.WaitToReadAsync(ct).ConfigureAwait(false))
+        while (await run.HasWorkAsync(ct).ConfigureAwait(false))
         {
             if (!run.TryTakeAccount(out var account))
             {
@@ -187,8 +245,8 @@ public sealed class BatchProcessor
     }
 
     /// <summary>
-    /// One session's lifetime: launch, get ready, then pull jobs until the account's image cap is reached, the queue
-    /// drains, or the account/session dies.
+    /// One session's lifetime: launch, get ready, then pull jobs until the account's image cap (or, in the
+    /// until-limit mode, its daily limit) is reached, the queue drains, or the account/session dies.
     /// </summary>
     private async Task<SessionExit> RunSessionAsync(GeminiAccount account, RunState run, IProgress<JobUpdate> progress, CancellationToken ct)
     {
@@ -233,7 +291,7 @@ public sealed class BatchProcessor
             var consecutiveFailures = 0;
             var imagesDone = 0;
 
-            await foreach (var job in run.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            while (await run.NextJobAsync(ct).ConfigureAwait(false) is { } job)
             {
                 using var jobScope = BeginJobScope(job);
                 job.AssignedAccountId = account.Id;
@@ -244,7 +302,9 @@ public sealed class BatchProcessor
                     case JobOutcome.Completed:
                         consecutiveFailures = 0;
                         run.Finish(JobStatus.Completed);
-                        if (_options.MaxImagesPerAccount > 0 && ++imagesDone >= _options.MaxImagesPerAccount)
+                        imagesDone++;
+                        // The until-limit mode has no cap: the account runs until Gemini reports its daily limit.
+                        if (!run.Endless && _options.MaxImagesPerAccount > 0 && imagesDone >= _options.MaxImagesPerAccount)
                         {
                             // The next prompt runs in another account's browser, so no pacing delay here.
                             _logger.LogInformation("Account {AccountId} generated {Images} image(s); its turn is over", account.Id, imagesDone);
@@ -278,6 +338,14 @@ public sealed class BatchProcessor
                     case JobOutcome.AccountLost:
                         var unavailable = (AccountUnavailableException)error!;
                         Requeue(job, run, progress, $"Moved off account {account.Id}: {unavailable.Message}");
+                        if (unavailable.Reason == AccountUnavailableReason.DailyLimitReached)
+                        {
+                            // The account is fine, just done for today: no quarantine, its turn simply ends.
+                            run.MarkLimitReached(account);
+                            _logger.LogInformation("Account {AccountId} reached its daily image limit after {Images} image(s) this turn; moving on",
+                                account.Id, imagesDone);
+                            return SessionExit.LimitReached;
+                        }
                         if (unavailable.Reason == AccountUnavailableReason.SessionLost)
                         {
                             _logger.LogWarning(unavailable, "Browser session for {AccountId} was lost during job {JobId}", account.Id, job.Id);
@@ -497,7 +565,7 @@ public sealed class BatchProcessor
     private IDisposable? BeginJobScope(PromptJob job) =>
         _logger.BeginScope(new Dictionary<string, object?> { ["JobId"] = job.Id });
 
-    private static BatchResult BuildResult(IReadOnlyList<PromptJob> jobs, RunState run, int leftovers)
+    private static BatchResult BuildResult(int? total, RunState run, int leftovers)
     {
         var used = run.UsedAccounts;
         var quarantined = used
@@ -505,15 +573,19 @@ public sealed class BatchProcessor
             .Select(a => new QuarantinedAccount(a.Id, a.Email, a.QuarantineReason ?? "unknown"))
             .ToList();
 
-        var stopReason = leftovers == 0 ? BatchStopReason.Finished
+        // Until-limit runs always end by running out of accounts; that is only a problem when none of them worked.
+        var stopReason = run.Endless
+            ? (used.Count > 0 && quarantined.Count == used.Count ? BatchStopReason.AllAccountsQuarantined : BatchStopReason.Finished)
+            : leftovers == 0 ? BatchStopReason.Finished
             : quarantined.Count == used.Count ? BatchStopReason.AllAccountsQuarantined
             : BatchStopReason.AccountsExhausted;
 
-        return new BatchResult(jobs.Count, run.Completed, run.Skipped, run.Failed)
+        return new BatchResult(total ?? run.Created, run.Completed, run.Skipped, run.Failed)
         {
             StopReason = stopReason,
             AccountsUsed = used.Count,
             QuarantinedAccounts = quarantined,
+            LimitReachedAccounts = run.LimitReachedAccounts.Select(a => a.Email).ToList(),
         };
     }
 
@@ -525,6 +597,9 @@ public sealed class BatchProcessor
 
         foreach (var account in result.QuarantinedAccounts)
             _logger.LogWarning("Quarantined account {AccountId}: {Reason}", account.Id, account.Reason);
+        if (result.LimitReachedAccounts.Count > 0)
+            _logger.LogInformation("Daily image limit reached by {Count} account(s): {Accounts}",
+                result.LimitReachedAccounts.Count, string.Join(", ", result.LimitReachedAccounts));
     }
 
     private static void SetStatus(PromptJob job, JobStatus status, IProgress<JobUpdate> progress)
@@ -545,30 +620,68 @@ public sealed class BatchProcessor
 
     private enum JobOutcome { Completed, Skipped, Failed, FailedPermanent, AccountLost }
 
-    private enum SessionExit { QueueDrained, AccountDone, Quarantined, SessionLost }
+    private enum SessionExit { QueueDrained, AccountDone, LimitReached, Quarantined, SessionLost }
 
     /// <summary>
     /// The shared job queue, the pool of accounts that haven't had their turn yet, plus counters. A job is
     /// "outstanding" from enqueue until it reaches a terminal state; requeueing keeps it outstanding. The queue
-    /// completes when nothing is outstanding (or no worker is left).
+    /// completes when nothing is outstanding (or no worker is left). With a <paramref name="generator"/> (the
+    /// until-limit mode) the queue only holds requeued jobs and never runs dry: a fresh job is made whenever it is empty.
     /// </summary>
-    private sealed class RunState(IEnumerable<GeminiAccount> accounts)
+    private sealed class RunState(IEnumerable<GeminiAccount> accounts, Func<PromptJob>? generator)
     {
         private readonly Channel<PromptJob> _channel = Channel.CreateUnbounded<PromptJob>();
         private readonly ConcurrentQueue<GeminiAccount> _unusedAccounts = new(accounts);
         private readonly ConcurrentQueue<GeminiAccount> _usedAccounts = new();
-        private int _completed, _skipped, _failed, _outstanding;
+        private readonly ConcurrentQueue<GeminiAccount> _limitReachedAccounts = new();
+        private int _completed, _skipped, _failed, _outstanding, _created;
 
         public int ActiveWorkers;
 
         public ChannelReader<PromptJob> Reader => _channel.Reader;
         public ChannelWriter<PromptJob> Writer => _channel.Writer;
 
+        /// <summary>Jobs are generated on demand until the accounts run out (the until-limit mode).</summary>
+        public bool Endless => generator is not null;
+
         public int Completed => Volatile.Read(ref _completed);
         public int Skipped => Volatile.Read(ref _skipped);
         public int Failed => Volatile.Read(ref _failed);
         public int Outstanding => Volatile.Read(ref _outstanding);
+        public int Created => Volatile.Read(ref _created);
         public IReadOnlyList<GeminiAccount> UsedAccounts => [.. _usedAccounts];
+        public IReadOnlyList<GeminiAccount> LimitReachedAccounts => [.. _limitReachedAccounts];
+
+        public void MarkLimitReached(GeminiAccount account) => _limitReachedAccounts.Enqueue(account);
+
+        /// <summary>False once the queue has drained for good (never, in the until-limit mode, short of cancellation).</summary>
+        public async ValueTask<bool> HasWorkAsync(CancellationToken ct)
+        {
+            if (!Endless) return await _channel.Reader.WaitToReadAsync(ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            return true;
+        }
+
+        /// <summary>A requeued job first, else a freshly generated one (until-limit), else the next queued one; null when drained.</summary>
+        public async ValueTask<PromptJob?> NextJobAsync(CancellationToken ct)
+        {
+            if (_channel.Reader.TryRead(out var job)) return job;
+
+            if (generator is not null)
+            {
+                ct.ThrowIfCancellationRequested();
+                job = generator();
+                Interlocked.Increment(ref _created);
+                Interlocked.Increment(ref _outstanding);
+                return job;
+            }
+
+            while (await _channel.Reader.WaitToReadAsync(ct).ConfigureAwait(false))
+            {
+                if (_channel.Reader.TryRead(out job)) return job;
+            }
+            return null;
+        }
 
         /// <summary>The next account in roster order that hasn't had its turn; false once the roster is used up.</summary>
         public bool TryTakeAccount([NotNullWhen(true)] out GeminiAccount? account)
@@ -599,7 +712,8 @@ public sealed class BatchProcessor
                 default: Interlocked.Increment(ref _failed); break;
             }
 
-            if (Interlocked.Decrement(ref _outstanding) == 0)
+            // An until-limit run never drains; it ends when the workers run out of accounts.
+            if (Interlocked.Decrement(ref _outstanding) == 0 && !Endless)
                 _channel.Writer.TryComplete();
         }
 

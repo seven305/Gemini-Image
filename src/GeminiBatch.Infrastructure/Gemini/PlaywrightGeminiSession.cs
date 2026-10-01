@@ -402,10 +402,34 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
         }
         catch (TimeoutException ex)
         {
+            var reply = await ReadLatestReplyAsync().ConfigureAwait(false);
+            if (GeminiSelectors.IsDailyLimitMessage(reply))
+            {
+                _logger.LogWarning("Gemini reports the daily image limit for {AccountId}: {Reply}", _account.Id, Truncate(reply!, 300));
+                throw new AccountUnavailableException(AccountUnavailableReason.DailyLimitReached,
+                    $"Daily image limit reached: {Truncate(OneLine(reply!), 160)}", ex);
+            }
             throw new GeminiSessionException(
-                "Gemini finished the turn without producing an image (refused prompt, quota, or UI change). See diagnostics.", ex);
+                "Gemini finished the turn without producing an image (refused prompt, quota, or UI change). See diagnostics."
+                + (string.IsNullOrWhiteSpace(reply) ? string.Empty : $" Reply: {Truncate(OneLine(reply), 160)}"), ex);
         }
         _logger.LogInformation("Image generated in {Elapsed:F1}s", sw.Elapsed.TotalSeconds);
+    }
+
+    /// <summary>Text of the latest model turn, or null if it cannot be read (only used to explain a missing image).</summary>
+    private async Task<string?> ReadLatestReplyAsync()
+    {
+        try
+        {
+            var response = GeminiSelectors.LatestResponse(_page);
+            if (await response.CountAsync().ConfigureAwait(false) == 0) return null;
+            return await response.InnerTextAsync(new() { Timeout = 5_000 }).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is PlaywrightException or TimeoutException)
+        {
+            _logger.LogDebug(ex, "Could not read the latest reply text");
+            return null;
+        }
     }
 
     // ---- Download ---------------------------------------------------------------------------
@@ -565,6 +589,7 @@ public sealed class PlaywrightGeminiSession : IGeminiSession
 
     private static string Preview(string prompt) => prompt.Length <= 60 ? prompt : prompt[..60] + "…";
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+    private static string OneLine(string s) => string.Join(' ', s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     private static string SanitizeForPath(string name)
     {

@@ -11,6 +11,24 @@ public sealed class GeminiSelectorsTests
 {
     private const string PreviewUrl = "https://lh3.googleusercontent.com/rd-gg-dl/AAQ_wbGoDkcZzg-abc123=s1024-rj?alr=yes";
 
+    [Theory]
+    [InlineData("You've reached your image generation limit for today. Try again tomorrow.")]
+    [InlineData("I can't create more images for you today, but I can still help with other things.")]
+    [InlineData("Sorry, I can’t generate any more images right now. Your limit resets at 5:00 PM.")]
+    [InlineData("You've hit your daily limit. Come back tomorrow to create more images.")]
+    [InlineData("You have reached the daily limit")]
+    public void IsDailyLimitMessage_matches_limit_replies(string reply) =>
+        Assert.True(GeminiSelectors.IsDailyLimitMessage(reply));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("Here's the image of a cat on a skateboard you asked for.")]
+    [InlineData("I can't create images of real people. Try a different description?")]
+    [InlineData("Something went wrong. Please try again later.")]
+    public void IsDailyLimitMessage_ignores_other_replies(string? reply) =>
+        Assert.False(GeminiSelectors.IsDailyLimitMessage(reply));
+
     [Fact]
     public void ToFullSizeCdnUrl_replaces_size_token_and_drops_query()
     {

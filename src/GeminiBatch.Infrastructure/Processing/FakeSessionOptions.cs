@@ -31,4 +31,10 @@ public sealed class FakeSessionOptions
 
     /// <summary>How many prompts the accounts above complete before they fail.</summary>
     public int AccountLossAfterCalls { get; set; } = 2;
+
+    /// <summary>
+    /// Images a fake session produces before it reports the account's daily limit
+    /// (<c>AccountUnavailableException</c>, DailyLimitReached) — drives the "until daily limit" mode offline. 0 = no limit.
+    /// </summary>
+    public int DailyLimitAfterImages { get; set; }
 }

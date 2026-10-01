@@ -26,4 +26,7 @@ public sealed record BatchResult(int Total, int Completed, int Skipped, int Fail
 
     /// <summary>Accounts set aside during this run (failed sign-in, auth wall, repeated failures) and why.</summary>
     public IReadOnlyList<QuarantinedAccount> QuarantinedAccounts { get; init; } = [];
+
+    /// <summary>Emails of the accounts whose turn ended because Gemini reported their daily image limit (not quarantined).</summary>
+    public IReadOnlyList<string> LimitReachedAccounts { get; init; } = [];
 }

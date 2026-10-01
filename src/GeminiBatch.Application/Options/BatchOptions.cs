@@ -34,6 +34,13 @@ public sealed class BatchOptions
     /// </summary>
     public bool RandomizePrompts { get; set; } = true;
 
+    /// <summary>
+    /// Initial state of the UI's "Generate until each account's daily limit" checkbox. On: every account keeps
+    /// generating images from randomly picked prompts until Gemini reports its daily limit, then the worker moves on
+    /// (<see cref="MaxImagesPerAccount"/> is ignored). Off: the planned one-turn-per-account batch.
+    /// </summary>
+    public bool GenerateUntilDailyLimit { get; set; } = true;
+
     public bool StripMetadata { get; set; } = true;
     public bool Headful { get; set; } = true;
 
