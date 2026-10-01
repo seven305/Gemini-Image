@@ -44,7 +44,7 @@ public sealed class TextPromptSourceTests : IDisposable
     }
 
     [Fact]
-    public void Image_prompt_csv_maps_the_section_and_ignores_the_other_columns()
+    public void Image_prompt_csv_maps_the_section_and_id_and_ignores_the_other_columns()
     {
         var path = WriteCsv(
             "#,Section,Blend Ratio,Woman Type,Flag Type,Image Prompt\n" +
@@ -58,7 +58,21 @@ public sealed class TextPromptSourceTests : IDisposable
         Assert.Equal(3, jobs.Count);
         Assert.Equal("A kitchen, warm light. A mug reading \"Hallo\".", jobs[0].Prompt);
         Assert.Equal(["A", "B", null], jobs.Select(j => j.Section));
-        Assert.All(jobs, j => Assert.Null(j.DesiredFileName));
+        Assert.Equal(["A-2", "B-1", "X-1"], jobs.Select(j => j.DesiredFileName));
+    }
+
+    [Fact]
+    public void Image_prompt_csv_id_gets_a_dash_before_its_number_unless_already_formatted()
+    {
+        var path = WriteCsv(
+            "#,Section,Image Prompt\n" +
+            "B14,B,One\n" +
+            "C-SPECIAL-1,C,Two\n" +
+            " ,D,Three\n");
+
+        var jobs = new TextPromptSource().FromCsv(path);
+
+        Assert.Equal(["B-14", "C-SPECIAL-1", null], jobs.Select(j => j.DesiredFileName));
     }
 
     [Fact]

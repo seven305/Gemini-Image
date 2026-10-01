@@ -181,9 +181,11 @@ Typed prompts get automatic file names (see [5.2](#52-file-names)).
 1. Click **Load prompts CSV…**.
 2. Pick the file.
 3. The prompts appear in the box, and the label shows e.g. **44 prompt(s) loaded from prompts.csv**.
-4. Each image is saved in its section's folder; once saved, the grid's **Filename** shows it with the folder, e.g. `A\gemini_20260930_142501.jpg`.
+4. Each image is saved in its section's folder; once saved, the grid's **Filename** shows it with the folder, e.g. `A\A-2.jpg`.
 
-**Section format** (the client sheet): the prompt is read from the **`Image Prompt`** column and the folder from the **`Section`** column. Every other column (`#`, `Blend Ratio`, …) is ignored.
+**Section format** (the client sheet): the prompt is read from the **`Image Prompt`** column, the folder from the **`Section`** column and the file name from the **`#`** column. Every other column (`Blend Ratio`, …) is ignored.
+
+The `#` id gets a dash between its letters and its number: `A2` → `A-2.jpg`, `B14` → `B-14.jpg`. An id that is not just letters + number is used as-is: `C-SPECIAL-1` → `C-SPECIAL-1.jpg`. A prompt used more than once (randomized runs) saves as `A-2_2.jpg`, `A-2_3.jpg`, … — nothing is ever overwritten. An empty `#` means an automatic name.
 
 ```text
 #,Section,Blend Ratio,Woman Type,Flag Type,Image Prompt
@@ -191,7 +193,7 @@ A2,A,Mixed — Cash & Wealth Signals,N,OBJECT,"A contemporary home kitchen, warm
 B1,B,Cash Dominant — LP1 Background,N,FABRIC,"An older German man, early 60s, …"
 ```
 
-Each image is saved in `<output folder>\<Section>\`, e.g. `output\A\`. A row with an empty Section goes straight into the output folder. Files get automatic names in this format.
+Each image is saved in `<output folder>\<Section>\`, e.g. `output\A\`. A row with an empty Section goes straight into the output folder.
 
 **Filename format** — pipe (`|`) separated, so commas in prompts are safe:
 

@@ -91,7 +91,7 @@ persistence and download behavior. Source of truth for `GeminiSelectors`.
   Prompt/Section/DesiredFileName so the grid adds the row (Prompt feeds the Filename tooltip). Unchecked = the planned one-turn-per-account `RunAsync` path.
   `Fake:DailyLimitAfterImages` (0 = never; appsettings sets 5) makes fake sessions hit the limit.
 - Phase 4 (operator UI): code complete. Prompts come from the text box or **Load prompts CSV…** (client layout
-  `Image Prompt` + `Section`, other columns ignored; or legacy `Filename | Prompt`; delimiter picked from the header line,
+  `Image Prompt` + `Section` + `#` (id -> `DesiredFileName`, `A2` -> `A-2`, `C-SPECIAL-1` as-is), other columns ignored; or legacy `Filename | Prompt`; delimiter picked from the header line,
   filenames -> `DesiredFileName`, Section -> `PromptJob.Section`; opened FileShare.ReadWrite so Excel can hold it).
   Each image is saved in `<output>\<Section>\` (`IImageStorage.SaveAsync(..., subfolder, ...)`, sanitized to one folder
   name); a Section prefixes the `ManifestKey` (`A/<key>`). The output folder is runtime state (`OutputLocation`

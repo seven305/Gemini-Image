@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using CsvHelper;
 using CsvHelper.Configuration;
 using GeminiBatch.Application.Abstractions;
@@ -6,9 +7,10 @@ using GeminiBatch.Domain;
 
 namespace GeminiBatch.Infrastructure.Prompts;
 
-public sealed class TextPromptSource : IPromptSource
+public sealed partial class TextPromptSource : IPromptSource
 {
     private const string ImagePromptColumn = "image prompt";
+    private const string IdColumn = "#";
     private const string PromptColumn = "prompt";
 
     public IReadOnlyList<PromptJob> FromLines(string text)
@@ -39,20 +41,22 @@ public sealed class TextPromptSource : IPromptSource
         csv.Read();
         csv.ReadHeader();
 
-        // "Image Prompt" + "Section" (the client layout; other columns such as "#" are ignored), or the older
-        // "prompt" + optional "filename" layout.
+        // "Image Prompt" + "Section" + optional "#" id (the client layout; the id names the image, other columns are
+        // ignored), or the older "prompt" + optional "filename" layout.
         var headers = csv.HeaderRecord?.Select(h => h.Trim().ToLowerInvariant()).ToHashSet() ?? [];
         var promptColumn = headers.Contains(ImagePromptColumn) ? ImagePromptColumn
             : headers.Contains(PromptColumn) ? PromptColumn
             : throw new InvalidDataException("CSV must have an 'Image Prompt' column.");
-        var readFileName = promptColumn == PromptColumn;
+        var isClientLayout = promptColumn == ImagePromptColumn;
 
         while (csv.Read())
         {
             var prompt = csv.GetField(promptColumn);
             if (string.IsNullOrWhiteSpace(prompt)) continue;
 
-            var fileName = readFileName && csv.TryGetField<string>("filename", out var f) ? f : null;
+            var fileName = isClientLayout
+                ? csv.TryGetField<string>(IdColumn, out var id) ? FileNameFromId(id) : null
+                : csv.TryGetField<string>("filename", out var f) ? f : null;
             var section = csv.TryGetField<string>("section", out var s) ? s : null;
             jobs.Add(new PromptJob
             {
@@ -64,6 +68,21 @@ public sealed class TextPromptSource : IPromptSource
 
         return jobs;
     }
+
+    /// <summary>
+    /// The image name for a client "#" id: a dash goes between a letter prefix and its number ("A2" -> "A-2"); any
+    /// other id ("C-SPECIAL-1") is used as-is. Blank -> null (the image gets the default name).
+    /// </summary>
+    private static string? FileNameFromId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        id = id.Trim();
+        var match = LettersThenDigits().Match(id);
+        return match.Success ? $"{match.Groups[1].Value}-{match.Groups[2].Value}" : id;
+    }
+
+    [GeneratedRegex(@"^([A-Za-z]+)(\d+)$")]
+    private static partial Regex LettersThenDigits();
 
     /// <summary>
     /// Picks the delimiter from the header line: "Filename | Prompt" and tab/semicolon files are accepted as well as
